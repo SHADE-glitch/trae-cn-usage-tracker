@@ -1,5 +1,26 @@
 # Trae CN format notes
 
+## Format registry (generated)
+
+The surface below is generated from the registry at the top of `scripts/tcut-sync.py`, so it
+cannot describe a field the parser no longer reads. Regenerate it with `tcut format --write` in
+the same change as the registry — a hand-copied list is how `schema_version` once became a value
+nothing read: written, plausible, and disconnected from the code.
+
+<!-- BEGIN generated: tcut format -->
+- **`state.vscdb` keys read** (the literal `LIKE` pattern each is reached through):
+  - `prompt_history` → `icube-ai-agent-storage-input-history`
+  - `session_agent_map` → `icube_session_agent_map`
+  - `agent_definitions` → `currentAgentData%`
+  - `model_catalog` → `%_AI.agent.model.model_list_map`
+  - `session_selected_model` → `%:AI.agent.model.session_selected_model`
+  - `session_list` → `memento/icube-ai-agent-storage`
+- **JSON fields read out of a `state.vscdb` blob**: `agent_id`, `consumption_rate`, `context_window_size`, `data`, `default`, `description`, `display_name`, `features`, `fee_model_level`, `inputText`, `list`, `max`, `mode`, `modelId`, `model_type`, `name`, `prompt_max_tokens`, `provider`, `rate`, `sessionId`, `type`
+- **Credential fields never read** (a custom-provider entry carries them beside the fields above): `ak`, `sk`, `base_url`, `custom_config`
+- **Credit-balance log tag**: `[ICubeUsageService]`
+- **`unparsed` reasons**: `session_memory:bad_name`, `session_memory:not_json`, `session_memory:not_object`, `topic:no_match`, `topic:bad_time`, `snapshot:time_unreadable`, `vscdb:open_failed`, `vscdb:read_failed`, `model_map:not_json`, `model_map:shape`, `model_map:group_shape`, `model_map:entry_shape`, `model_map:no_name`, `session_model:not_json`, `session_model:shape`, `session_model:no_model_id`, `mcp:bad_metadata`, `credit_log:read_failed`, `credit_log:bad_timestamp`, `credit_log:event_shape`
+<!-- END generated -->
+
 ## Observed readable sources
 
 The indexer reads these paths below `TCUT_TRAE_CN_HOME` (`~/.trae-cn`) and `TCUT_TRAE_CN_DATA` (`~/.config/Trae CN`):

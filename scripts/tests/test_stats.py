@@ -432,13 +432,13 @@ class CommandTest(CliBase):
         self.assertEqual(len(data["sessions"]), 1)
         self.assertIn("inventory", data)
 
-    def test_format_prints_the_format_doc(self):
+    def test_format_prints_the_format_surface(self):
         rc, out = self.run_cli("format")
         # A guard that accepts rc 0 or 1 cannot fail, so it cannot catch a `format`
-        # that stopped printing the doc. Name the markers the doc must contain.
+        # that stopped printing the surface. Name the markers it must contain.
         self.assertEqual(rc, 0, out)
-        self.assertIn("# Trae CN format notes", out)
         self.assertIn("state.vscdb", out)
+        self.assertIn("unparsed", out)
 
     def test_format_needs_no_database(self):
         """`format` explains the sources; requiring an index made it unusable pre-sync."""
@@ -446,7 +446,7 @@ class CommandTest(CliBase):
         self.assertFalse(missing.exists())
         rc, out = self.run_cli("--db", str(missing), "format", expect_db=False)
         self.assertEqual(rc, 0, out)
-        self.assertIn("# Trae CN format notes", out)
+        self.assertIn("state.vscdb", out)
         self.assertFalse(missing.exists(), "`format` created the database it should not need")
 
 

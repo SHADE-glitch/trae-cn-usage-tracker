@@ -50,6 +50,74 @@ def user_root() -> Path:
     return db.TRAE_CN_DATA / "User"
 
 
+# --- format registry -------------------------------------------------------
+# The one place that states what this parser depends on. ``format_doc()`` renders
+# it into ``docs/maintenance/trae-cn-format.md`` between the generated markers, and
+# ``scripts/tests/test_format_registry.py`` holds the registry to the parser in both
+# directions — nothing read unregistered, nothing registered unread.
+
+# state.vscdb keys this indexer reads, by role. The value is the literal ``LIKE``
+# pattern ``_ingest_vscdb`` passes to ``_vscdb_value`` / ``_keys_like``, so a rename
+# is one edit here and the guard names any call site that still inlines the old one.
+VSCDB_KEYS = {
+    "prompt_history": "icube-ai-agent-storage-input-history",
+    "session_agent_map": "icube_session_agent_map",
+    "agent_definitions": "currentAgentData%",
+    "model_catalog": "%_AI.agent.model.model_list_map",
+    "session_selected_model": "%:AI.agent.model.session_selected_model",
+    "session_list": "memento/icube-ai-agent-storage",
+}
+
+# Literal JSON keys read out of a ``state.vscdb`` blob. A model-catalog entry also
+# carries ``ak``, ``sk``, ``base_url`` and ``custom_config``; those are deliberately
+# absent — for a custom endpoint they can hold credentials and are never touched.
+VSCDB_FIELDS = frozenset({
+    "inputText", "sessionId", "agent_id", "name", "type", "description",
+    "display_name", "provider", "model_type", "fee_model_level",
+    "prompt_max_tokens", "modelId", "mode", "list",
+    "features", "consumption_rate", "data", "rate",
+    "context_window_size", "default", "max",
+})
+
+# Reasons an input is counted in ``unparsed`` instead of indexed. The vocabulary is
+# here so a new source cannot invent a reason nobody can look up, and so a reason
+# that stops being emitted is visible rather than merely quiet.
+UNPARSED_REASONS = (
+    "session_memory:bad_name", "session_memory:not_json", "session_memory:not_object",
+    "topic:no_match", "topic:bad_time",
+    "snapshot:time_unreadable",
+    "vscdb:open_failed", "vscdb:read_failed",
+    "model_map:not_json", "model_map:shape", "model_map:group_shape",
+    "model_map:entry_shape", "model_map:no_name",
+    "session_model:not_json", "session_model:shape", "session_model:no_model_id",
+    "mcp:bad_metadata",
+    "credit_log:read_failed", "credit_log:bad_timestamp", "credit_log:event_shape",
+)
+
+
+def format_doc() -> str:
+    """Render the format registry as markdown (``tcut format``).
+
+    Every value is read back out of the constants rather than retyped, so the
+    checked-in document cannot describe a surface the code no longer reads.
+    ``scripts/tests/test_maintenance_docs.py`` holds the file to this output.
+    """
+    def bullets(values):
+        return ", ".join(f"`{v}`" for v in values)
+
+    keys = "\n".join(f"  - `{role}` → `{pattern}`" for role, pattern in VSCDB_KEYS.items())
+    return "".join([
+        "- **`state.vscdb` keys read** (the literal `LIKE` pattern each is reached "
+        "through):\n" + keys + "\n",
+        f"- **JSON fields read out of a `state.vscdb` blob**: "
+        f"{bullets(sorted(VSCDB_FIELDS))}\n",
+        "- **Credential fields never read** (a custom-provider entry carries them "
+        "beside the fields above): `ak`, `sk`, `base_url`, `custom_config`\n",
+        f"- **Credit-balance log tag**: `{USAGE_TAG}`\n",
+        f"- **`unparsed` reasons**: {bullets(UNPARSED_REASONS)}\n",
+    ])
+
+
 # --- small helpers ---------------------------------------------------------
 
 _SESSION_MEMORY_RE = re.compile(r"^session_memory_([0-9a-f]+)\.jsonl$")
@@ -695,7 +763,7 @@ def _consumption_rate(entry):
 
 def _ingest_vscdb(conn, conn2, workspace, store_content=True) -> int:
     rows = 0
-    history = _vscdb_value(conn2, "icube-ai-agent-storage-input-history")
+    history = _vscdb_value(conn2, VSCDB_KEYS["prompt_history"])
     if isinstance(history, list):
         conn.execute("DELETE FROM prompts WHERE workspace = ?", (workspace,))
         for idx, item in enumerate(history):
@@ -708,7 +776,7 @@ def _ingest_vscdb(conn, conn2, workspace, store_content=True) -> int:
                     " VALUES(?,?,?)", (workspace, idx, text))
                 rows += 1
     # session -> agent map
-    mapping = _vscdb_value(conn2, "icube_session_agent_map")
+    mapping = _vscdb_value(conn2, VSCDB_KEYS["session_agent_map"])
     if isinstance(mapping, dict):
         for sid, agent in mapping.items():
             if not isinstance(agent, str):
@@ -721,7 +789,7 @@ def _ingest_vscdb(conn, conn2, workspace, store_content=True) -> int:
                 "INSERT OR IGNORE INTO agents(name) VALUES(?)", (agent,))
             rows += 1
     # agent definitions
-    for key in _keys_like(conn2, "currentAgentData%"):
+    for key in _keys_like(conn2, VSCDB_KEYS["agent_definitions"]):
         data = _vscdb_value(conn2, key)
         if isinstance(data, dict):
             name = data.get("name") or data.get("agent_id")
@@ -736,7 +804,7 @@ def _ingest_vscdb(conn, conn2, workspace, store_content=True) -> int:
     # Only pricing/shape fields are read. An entry also carries `ak`, `sk`,
     # `base_url` and `custom_config`, which for a custom endpoint can hold
     # credentials — those keys are never touched, so they cannot reach the index.
-    for key in _keys_like(conn2, "%_AI.agent.model.model_list_map"):
+    for key in _keys_like(conn2, VSCDB_KEYS["model_catalog"]):
         account = key.rsplit("_AI.agent.model.model_list_map", 1)[0] or "undefined"
         data = _vscdb_value(conn2, key)
         if data is None:
@@ -772,7 +840,7 @@ def _ingest_vscdb(conn, conn2, workspace, store_content=True) -> int:
                      _int(entry.get("prompt_max_tokens"))))
                 rows += 1
     # which model each session was set to (`<uid>:AI.agent.model...`)
-    for key in _keys_like(conn2, "%:AI.agent.model.session_selected_model"):
+    for key in _keys_like(conn2, VSCDB_KEYS["session_selected_model"]):
         account = key.rsplit(":AI.agent.model.session_selected_model", 1)[0]
         data = _vscdb_value(conn2, key)
         if data is None:
@@ -797,7 +865,7 @@ def _ingest_vscdb(conn, conn2, workspace, store_content=True) -> int:
                      _int(sel.get("mode")) if isinstance(sel, dict) else None))
                 rows += 1
     # session list
-    sessions = _vscdb_value(conn2, "memento/icube-ai-agent-storage")
+    sessions = _vscdb_value(conn2, VSCDB_KEYS["session_list"])
     if isinstance(sessions, dict):
         for item in sessions.get("list", []):
             sid = item.get("sessionId") if isinstance(item, dict) else None

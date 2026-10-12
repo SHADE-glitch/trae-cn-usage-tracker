@@ -315,13 +315,45 @@ def cmd_restore(conn, args):
     return 0
 
 
+FORMAT_BEGIN = "<!-- BEGIN generated: tcut format -->"
+FORMAT_END = "<!-- END generated -->"
+
+
+def _replace_generated_block(doc: Path, body: str) -> bool:
+    """Rewrite the marked block in ``doc``; False when the markers are gone.
+
+    Refusing beats appending: a generated section dropped into hand-written prose
+    is how a document ends up stating two things at once.
+    """
+    text = doc.read_text(encoding="utf-8") if doc.is_file() else ""
+    if FORMAT_BEGIN not in text or FORMAT_END not in text:
+        return False
+    head, _, rest = text.partition(FORMAT_BEGIN + "\n")
+    _, tail = rest.split(FORMAT_END, 1)
+    doc.write_text(f"{head}{FORMAT_BEGIN}\n{body}{FORMAT_END}{tail}",
+                   encoding="utf-8")
+    return True
+
+
 def cmd_format(conn, args):
-    doc = Path(__file__).resolve().parent.parent / "docs" / "maintenance" / "trae-cn-format.md"
-    if doc.is_file():
-        print(doc.read_text(encoding="utf-8"))
+    """Print or refresh the Trae CN format-dependency surface.
+
+    Generated from the parser's registry instead of written by hand, because a
+    hand-copied list is how ``schema_version`` became a value nothing read: a
+    description that stopped matching the code and stayed checked in anyway.
+    """
+    body = db.load_sync().format_doc()
+    if not getattr(args, "write", False):
+        print(body, end="")
         return 0
-    print("docs/maintenance/trae-cn-format.md is missing", file=sys.stderr)
-    return 1
+    doc = (Path(__file__).resolve().parent.parent
+           / "docs" / "maintenance" / "trae-cn-format.md")
+    if not _replace_generated_block(doc, body):
+        print(f"{doc} has no generated block markers — refusing to rewrite it",
+              file=sys.stderr)
+        return 1
+    print(f"updated   {doc}")
+    return 0
 
 
 COMMANDS = {
@@ -378,6 +410,9 @@ def main(argv=None) -> int:
             p.add_argument("--reason", default=None)
         if name == "restore":
             p.add_argument("name", nargs="?", default=None)
+        if name == "format":
+            p.add_argument("--write", action="store_true",
+                           help="refresh the generated block in docs/maintenance/")
     args = ap.parse_args(argv)
 
     command = args.command or "stats"

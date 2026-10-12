@@ -9,6 +9,7 @@
 | Headless CLI | stdlib only | `sync`, reports, export, health, backup and restore work without Textual |
 | TUI | Textual 8.2.x | `requirements.txt` pins `>=8.2,<9` |
 | Content storage | local SQLite, opt-out | `store_content=false` purges prose while retaining metadata |
+| CI | Python 3.11 / 3.14 | `.github/workflows/ci.yml` runs the offline suite on both ends of the declared range |
 
 ## Compatibility contract
 
