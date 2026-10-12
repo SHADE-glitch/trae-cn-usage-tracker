@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """tcut-tui — interactive viewer for the Trae CN usage tracker.
 
-Tabs: Dashboard · Sessions · Projects · Prompts · Agents · Skills · Plugins ·
-MCP · Memory · Usage.
+Tabs: Dashboard · Skills · Agents · Plugins · MCP.
 
-The Usage tab is not what cbut's Usage tab is. Trae CN persists no per-request
-records and no token counts, so there is still no Tools tab and no token panels:
-this tab holds the one consumption-derived number Trae does write — its credit
-balance, sampled at app start — and says out loud what is absent. Everything else
-comes from Trae's memory layer, its snapshot git tags, the model selected per
-session and its installed inventory; docs/maintenance/trae-cn-format.md records
-what was measured and found missing.
+The tab set is cbut's, minus Tools, Tokens and Usage. Those three cannot be fed
+from Trae CN's disk: snapshot tags carry toolcall ids but never a tool name, the
+agent store is encrypted so no token count exists to read, and there is no
+per-request record. docs/maintenance/trae-cn-format.md holds the measurements.
+The session-level tables cbut has no room for were dropped on the same rule;
+their rows stay indexed and reach the terminal through ``tcut sessions``,
+``tcut projects``, ``tcut prompts`` and ``tcut memory``, and the credit balance
+Trae does log sits in the Dashboard's Credits · sync panel.
 
 Requires ``textual`` (see requirements.txt). The headless reports in
 tcut-stats.py need no third-party packages; this file is the only place that
@@ -90,28 +90,19 @@ CUSTOM_RANGE = "custom"
 # keeps, and a plan that cannot name the columns it dropped is a silent
 # truncation wearing a guard's clothes.
 #
-# Everything Trae CN writes in plaintext is session-level, so these are session
-# columns: a memory summary (intent / outcome), snapshot-derived counts (turns /
-# calls), and the installed inventory. Still deliberately absent: tool / token /
-# cost columns — Trae keeps those encrypted (see docs/maintenance/compatibility).
-# `model` is the selection Trae records for the session itself, not a measurement.
-SESSIONS_COLUMNS = ("when", "session", "project", "agent", "model", "turns",
-                    "calls", "intent", "outcome")
-PROJECTS_COLUMNS = ("project", "sessions", "first seen", "last seen")
-PROMPTS_COLUMNS = ("project", "#", "prompt")
+# cbut's own tabs are usage counters (calls, ok, last used). Trae CN records no
+# invocations per skill, plugin or MCP server — only what is installed — so the
+# same tabs read as inventory here. Agents is the one table with a session count,
+# because the agent label is written per session.
 AGENTS_COLUMNS = ("agent", "kind", "sessions")
 SKILLS_COLUMNS = ("skill", "source", "owner", "path")
 PLUGINS_COLUMNS = ("plugin", "version", "source", "path")
 MCP_COLUMNS = ("server", "source", "path")
-MEMORY_COLUMNS = ("scope", "#", "paragraph")
 # The sessions behind one entity. The subject is in the screen title, so it is not
 # repeated in every row; the columns are the ones that read differently per session.
 ENTITY_COLUMNS = ("when", "session", "turns", "calls", "model", "intent")
 # kind -> the q_sessions filter it maps to.
 ENTITY_FILTERS = {"project": "project", "agent": "agent", "model": "model_id"}
-# The credit series. "spent >=" is a lower bound between two samples and the label
-# says so; cbut's Usage columns (requests, tokens, cache) have no analog here.
-USAGE_COLUMNS = ("when", "balance", "spent >=", "generation", "log")
 ENTITY_LABELS = {"project": "Project", "agent": "Agent", "model": "Model"}
 
 
@@ -934,10 +925,17 @@ if HAVE_TEXTUAL:
 
         WIDE_TABLES = {"t-entity": (ENTITY_COLUMNS, "colnote-entity", 0)}
 
-        def __init__(self, kind: str, value: str):
+        def __init__(self, kind: str, value: str, start=None, end=None,
+                     window_label: str = ""):
             super().__init__()
             self.kind = str(kind)
             self.value = str(value)
+            # The window the row was read from. Without it this screen listed every
+            # session the agent ever had while the tab above it printed a count for
+            # the range — two numbers for one row, disagreeing on the same screen.
+            self.start = start
+            self.end = end
+            self.window_label = window_label or ""
             # Per-host, not a class attribute: two open screens must not share one
             # row cache (the mixin's contract).
             self._wide_rows = {}
@@ -952,7 +950,9 @@ if HAVE_TEXTUAL:
             label = ENTITY_LABELS.get(self.kind, self.kind)
             yield TopBar(f"{label} · {clip(self.value, 44)}")
             with Vertical(id="entity-body"):
-                yield Static(f"[b]{label}[/b] · {self.value}", id="entity-title")
+                yield Static(f"[b]{label}[/b] · {self.value}"
+                             + (f" · {self.window_label}" if self.window_label else ""),
+                             id="entity-title")
                 yield Static(id="colnote-entity", classes="col-note")
                 yield DataTable(id="t-entity", zebra_stripes=True)
             yield Footer()
@@ -968,17 +968,22 @@ if HAVE_TEXTUAL:
         def _reload(self) -> None:
             conn = db.open_db(self.app.db_path, readonly=True)
             try:
-                found = db.q_sessions(conn, **{ENTITY_FILTERS[self.kind]: self.value})
+                found = db.q_sessions(
+                    conn, start_ts=self.start, end_ts=self.end,
+                    **{ENTITY_FILTERS[self.kind]: self.value})
             except sqlite3.Error as exc:
                 self.app._report_query_error(exc)
                 return
             finally:
                 conn.close()
-            rows = [[ts(r["last_ts"]), r["session_id"][:12], f"{r['turns']:,}",
+            rows = [[db.derived_mark(r["derived_ts"]) + ts(r["shown_ts"]),
+                     r["session_id"][:12], f"{r['turns']:,}",
                      f"{r['toolcalls']:,}", r["model_id"] or "-",
                      r["intent"] or "-"] for r in found]
-            self._fill_wide("t-entity", rows,
-                            f"No sessions recorded for this {self.kind}",
+            empty = (f"No sessions for this {self.kind} in {self.window_label}"
+                     if self.window_label else
+                     f"No sessions recorded for this {self.kind}")
+            self._fill_wide("t-entity", rows, empty,
                             key_kind="session",
                             key_rows=[[r["session_id"]] for r in found])
 
@@ -1030,7 +1035,6 @@ if HAVE_TEXTUAL:
            height because a note that is itself cut off at the right edge would be
            the same defect it exists to report. */
         .col-note { padding: 0 1; color: $text-muted; height: auto; display: none; }
-        .absent-note { padding: 0 1 1 1; color: $text-muted; }
         #dash-activity { color: $accent; }
         #dash-activity-axis { color: $text-muted; }
         /* Two panels side by side need ~28 cells each (a 24-char line plus border
@@ -1043,9 +1047,7 @@ if HAVE_TEXTUAL:
         """
         # Pane ids in display order. Used for wrap-around tab cycling.
         TAB_IDS = [
-            "tab-dashboard", "tab-sessions", "tab-projects", "tab-prompts",
-            "tab-agents", "tab-skills", "tab-plugins", "tab-mcp", "tab-memory",
-            "tab-usage",
+            "tab-dashboard", "tab-skills", "tab-agents", "tab-plugins", "tab-mcp",
         ]
         # The tab shown on launch. The TopBar Select must start on this tab's
         # own range (see compose), or its mount-time Changed would overwrite
@@ -1063,7 +1065,6 @@ if HAVE_TEXTUAL:
         ENABLE_COMMAND_PALETTE = False
 
         DASH_TOP = 5            # rows in the Dashboard's Top projects / Top agents
-        LOG_LIMIT = 100         # rows on the Prompts tab
         DETAIL_LIMIT = 200      # items on a session's action / learned / topic lists
 
         def __init__(self, db_path, clock=None, config=None):
@@ -1075,7 +1076,6 @@ if HAVE_TEXTUAL:
             # turns into a message rather than a traceback.
             self.config = dict(db.DEFAULTS) if config is None else dict(config)
             self.DASH_TOP = self.config["top_n"]
-            self.LOG_LIMIT = self.config["log_limit"]        # Prompts tab rows
             self.DETAIL_LIMIT = self.config["detail_limit"]  # session detail lists
             # Shadows WideTableMixin.NAME_CAP for this host and every screen pushed
             # on top of it; the property ``name_cap`` is what reads it.
@@ -1091,16 +1091,12 @@ if HAVE_TEXTUAL:
             self._sync_pending = False
             self.sync_mod = None
             # Per-tab range state: each tab keeps its own window, so changing one
-            # tab's range never moves another's. Session-class tabs default to 7
-            # days; the inventory tabs (Skills/Plugins/MCP), the Prompts tab and
-            # the Memory tab have no timestamp of their own, so they are all-time
-            # and their range selector is hidden.
+            # tab's range never moves another's. The Dashboard and the Agents tab
+            # count sessions, so they have a window; the three inventory tabs have
+            # no timestamp of their own, so they are all-time and their range
+            # selector is hidden.
             self.tab_range = {
-                "tab-dashboard": "7d", "tab-sessions": "7d",
-                "tab-projects": "7d", "tab-agents": "7d",
-                # 7d, not cbut's 1d: Trae writes one balance per app start, so a
-                # daily window is usually empty through no fault of the data.
-                "tab-usage": "7d",
+                "tab-dashboard": "7d", "tab-agents": "7d",
             }
             self._data_ready = False
             # table id -> (rows, empty message, key index, key kind, key rows)
@@ -1193,37 +1189,18 @@ if HAVE_TEXTUAL:
                         Static(id="dash-note"),
                         id="dash-box",
                     )
-                with TabPane("Sessions", id="tab-sessions"):
-                    yield Static(id="colnote-sessions", classes="col-note")
-                    yield DataTable(id="t-sessions", zebra_stripes=True)
-                with TabPane("Projects", id="tab-projects"):
-                    yield Static(id="colnote-projects", classes="col-note")
-                    yield DataTable(id="t-projects", zebra_stripes=True)
-                with TabPane("Prompts", id="tab-prompts"):
-                    yield Static(id="colnote-prompts", classes="col-note")
-                    yield DataTable(id="t-prompts", zebra_stripes=True)
-                with TabPane("Agents", id="tab-agents"):
-                    yield Static(id="colnote-agents", classes="col-note")
-                    yield DataTable(id="t-agents", zebra_stripes=True)
                 with TabPane("Skills", id="tab-skills"):
                     yield Static(id="colnote-skills", classes="col-note")
                     yield DataTable(id="t-skills", zebra_stripes=True)
+                with TabPane("Agents", id="tab-agents"):
+                    yield Static(id="colnote-agents", classes="col-note")
+                    yield DataTable(id="t-agents", zebra_stripes=True)
                 with TabPane("Plugins", id="tab-plugins"):
                     yield Static(id="colnote-plugins", classes="col-note")
                     yield DataTable(id="t-plugins", zebra_stripes=True)
                 with TabPane("MCP", id="tab-mcp"):
                     yield Static(id="colnote-mcp", classes="col-note")
                     yield DataTable(id="t-mcp", zebra_stripes=True)
-                with TabPane("Memory", id="tab-memory"):
-                    yield Static(id="colnote-memory", classes="col-note")
-                    yield DataTable(id="t-memory", zebra_stripes=True)
-                with TabPane("Usage", id="tab-usage"):
-                    # Says what is absent before it shows what is present: a table of
-                    # balances under a heading of "Usage" invites the reader to ask
-                    # where the tokens went, and the answer is not in the rows.
-                    yield Static(id="usage-note", classes="absent-note")
-                    yield Static(id="colnote-usage", classes="col-note")
-                    yield DataTable(id="t-usage", zebra_stripes=True)
             yield Static("", id="status")
             yield Footer()
 
@@ -1278,39 +1255,9 @@ if HAVE_TEXTUAL:
 
 
 
-        def _fill_sessions(self, conn, start=None, end=None) -> None:
-            # The row key is the session id, so Enter/double-click opens that
-            # session's detail screen. The id rides as the key (key_rows), not as
-            # a hidden column, so a capped table still routes to the right row.
-            found = db.q_sessions(conn, start_ts=start, end_ts=end)
-            rows = [[ts(r["last_ts"]), r["session_id"][:12],
-                     r["project"] or r["project_key"] or "-", r["agent"] or "-",
-                     r["model_id"] or "-",
-                     f"{r['turns']:,}", f"{r['toolcalls']:,}",
-                     r["intent"] or "-", r["outcome"] or "-"]
-                    for r in found]
-            self._fill_wide("t-sessions", rows, "No sessions in this window",
-                            key_kind="session",
-                            key_rows=[[r["session_id"]] for r in found])
-
-        def _fill_projects(self, conn, start=None, end=None) -> None:
-            rows = [[r["project"] or r["project_key"], f"{r['sessions']:,}",
-                     ts(r["first_seen"]), ts(r["last_seen"])]
-                    for r in db.q_projects(conn, start_ts=start, end_ts=end)]
-            self._fill_wide("t-projects", rows, "No projects in this window",
-                            key_kind="project")
-
-        def _fill_prompts(self, conn, start=None, end=None) -> None:
-            # All-time: the input history carries no timestamp of its own, so
-            # start/end are accepted for the shared fill signature but ignored.
-            rows = [[r["folder"] or r["workspace"], f"{r['idx']:,}",
-                     r["text"] or "-"]
-                    for r in db.q_prompts(conn, limit=self.LOG_LIMIT)]
-            self._fill_wide("t-prompts", rows, "No prompts recorded",
-                            key_index=(0, 1), key_kind="prompt")
-
         def _fill_agents(self, conn, start=None, end=None) -> None:
-            rows = [[r["agent"], r["kind"] or "-", f"{r['sessions']:,}"]
+            rows = [[r["agent"], r["kind"] or "-",
+                     db.window_count(r["sessions"], r["undated"])]
                     for r in db.q_agents(conn, start_ts=start, end_ts=end)]
             self._fill_wide("t-agents", rows, "No agents recorded",
                             key_kind="agent")
@@ -1349,35 +1296,11 @@ if HAVE_TEXTUAL:
                 table_id, rows, empty_msg, key_index=(0, 1), key_kind="inv",
                 key_rows=[[r["name"], r["owner_plugin"]] for r in found])
 
-        def _fill_usage(self, conn, start=None, end=None) -> None:
-            """The credit balance series, with the absence stated above the rows."""
-            self.query_one("#usage-note", Static).update(
-                "Tokens, cost, requests and tool names are absent by measurement, not by "
-                "choice — Trae CN writes none of them to disk (see `tcut format`). "
-                "What is here is the credit balance Trae logs at app start, and "
-                "\"spent >=\" is a lower bound between two samples, not a measurement.")
-            found = db.q_credits(conn, start_ts=start, end_ts=end)
-            rows = [[local_time(r["ts"]), db.credit_num(r["remaining"]),
-                     db.credit_num(r["spent_at_least"]),
-                     "-" if r["generation"] is None else f"{r['generation']:,}",
-                     db.credit_log_label(r["source"])] for r in found]
-            self._fill_wide("t-usage", rows, "No credit balance in this window")
-
-        def _fill_memory(self, conn, start=None, end=None) -> None:
-            # All-time: memory documents carry no timestamp.
-            rows = [[r["scope"], f"{r['idx']:,}", r["text"] or "-"]
-                    for r in db.q_memory(conn)]
-            self._fill_wide("t-memory", rows, "No memory documents indexed",
-                            key_index=(0, 1), key_kind="mem")
-
         # pane id -> the fill method for that tab (dashboard handled separately).
         _PANE_FILL = {
             "tab-dashboard": "_fill_dashboard",
-            "tab-sessions": "_fill_sessions", "tab-projects": "_fill_projects",
-            "tab-prompts": "_fill_prompts", "tab-agents": "_fill_agents",
-            "tab-skills": "_fill_skills", "tab-plugins": "_fill_plugins",
-            "tab-mcp": "_fill_mcp", "tab-memory": "_fill_memory",
-            "tab-usage": "_fill_usage",
+            "tab-skills": "_fill_skills", "tab-agents": "_fill_agents",
+            "tab-plugins": "_fill_plugins", "tab-mcp": "_fill_mcp",
         }
 
         def refresh_data(self, conn=None) -> None:
@@ -1397,18 +1320,14 @@ if HAVE_TEXTUAL:
             try:
                 self._sync_range_widget()      # initial 📅 label + Select value
                 # Each tab is filled with its own window, so one tab's range
-                # never moves another's. Prompts, the inventory tabs (Skills /
-                # Plugins / MCP) and Memory are all-time — they carry no
-                # timestamp of their own, so their range selector is hidden.
+                # never moves another's. The three inventory tabs (Skills /
+                # Plugins / MCP) are all-time — they carry no timestamp of their
+                # own, so their range selector is hidden.
                 self._fill_dashboard(conn, *self._bounds_for("tab-dashboard"))
-                self._fill_sessions(conn, *self._bounds_for("tab-sessions"))
-                self._fill_projects(conn, *self._bounds_for("tab-projects"))
-                self._fill_agents(conn, *self._bounds_for("tab-agents"))
-                self._fill_prompts(conn)
                 self._fill_skills(conn)
+                self._fill_agents(conn, *self._bounds_for("tab-agents"))
                 self._fill_plugins(conn)
                 self._fill_mcp(conn)
-                self._fill_memory(conn)
                 o = db.overview(conn)          # status bar stays all-time
             except sqlite3.Error as exc:
                 # This runs during on_mount: letting it raise kills the app
@@ -1531,15 +1450,10 @@ if HAVE_TEXTUAL:
         # every column and shows no note, so registering one that does not need
         # the plan costs nothing.
         WIDE_TABLES = {
-            "t-sessions": (SESSIONS_COLUMNS, "colnote-sessions", 2),
-            "t-projects": (PROJECTS_COLUMNS, "colnote-projects", 2),
-            "t-prompts": (PROMPTS_COLUMNS, "colnote-prompts", 2),
-            "t-agents": (AGENTS_COLUMNS, "colnote-agents", 2),
             "t-skills": (SKILLS_COLUMNS, "colnote-skills", 2),
+            "t-agents": (AGENTS_COLUMNS, "colnote-agents", 2),
             "t-plugins": (PLUGINS_COLUMNS, "colnote-plugins", 2),
             "t-mcp": (MCP_COLUMNS, "colnote-mcp", 2),
-            "t-memory": (MEMORY_COLUMNS, "colnote-memory", 2),
-            "t-usage": (USAGE_COLUMNS, "colnote-usage", 2),
         }
 
         def _apply_responsive_layout(self, width=None) -> None:
@@ -1652,25 +1566,43 @@ if HAVE_TEXTUAL:
                 return
             self._render_dashboard_sessions(kpi)
             self._render_dashboard_inventory(kpi)
-            self._render_dashboard_projects(projects)
-            self._render_dashboard_agents(agents)
+            # Every leaderboard sentence that is not a number has to name the range it
+            # is blaming, and the range is this tab's own — never the top bar's.
+            window = db.window_label(self._range_of("tab-dashboard"))
+            all_time = start is None and end is None
+            span = "" if all_time else " in this range"
+            self._render_dashboard_projects(
+                projects, self._blank_text(kpi["sessions"], window, span,
+                                           "has a project key"))
+            self._render_dashboard_agents(
+                agents, self._blank_text(kpi["sessions"], window, span,
+                                         "names an installed agent"))
             self._render_dashboard_activity(daily, start, end)
-            self._render_dashboard_models(models)
+            self._render_dashboard_models(
+                models, self._blank_text(kpi["sessions"], window, span,
+                                         "records a model selection"), all_time)
             self._render_dashboard_credits(credits)
-            if not (kpi["sessions"] or kpi["turns"] or kpi["toolcalls"]):
-                self.query_one("#dash-note", Static).update(
-                    "No sessions in this window — widen the range above.")
-            else:
-                self.query_one("#dash-note", Static).update(
-                    "Range: the top bar · this tab keeps its own window")
+            note = ("No sessions in this window — widen the range above."
+                    if not (kpi["sessions"] or kpi["turns"] or kpi["toolcalls"])
+                    else "Range: the top bar · this tab keeps its own window")
+            if kpi["unmeasured"]:
+                # One place that says what the `~` in every list means, sized to the
+                # population it marks: Trae left these sessions with no measured time.
+                note += (f" · {db.count_n(kpi['unmeasured'], 'session')}"
+                         " with no measured time, dated from the session id (~)")
+            self.query_one("#dash-note", Static).update(note)
             self._apply_responsive_layout()
 
-        def _render_dashboard_models(self, rows) -> None:
+        def _render_dashboard_models(self, rows, blank: str, all_time: bool) -> None:
             """Sessions per selected model — the only model ranking Trae supports."""
-            top = [r for r in rows if r["sessions"]][: self.DASH_TOP]
+            top = rows[: self.DASH_TOP]
             if not top:
+                # This query filters in SQL, so a model whose sessions all fall outside
+                # the range is absent rather than zero. Under All time an empty result is
+                # the literal truth — no session ever recorded a selection — and only a
+                # bounded range has to work out whether it hid rows or the index has none.
                 self.query_one("#dash-top-models", Static).update(
-                    "no model selection recorded")
+                    "no model selection recorded" if all_time else blank)
                 return
             lines = [f"{i}. {clip(r['model_id'], 24):<24}"
                      f"{db.count_n(r['sessions'], 'session'):>12}"
@@ -1721,29 +1653,49 @@ if HAVE_TEXTUAL:
             self._put_panel("#dash-inv-plugins", "Plugins", f"{k['plugins']:,}")
             self._put_panel("#dash-inv-mcp", "MCP", f"{k['mcp']:,}")
 
-        def _render_dashboard_projects(self, rows) -> None:
-            # The name-keyed list keeps 0-session projects under a window; drop
-            # them so the leaderboard is a leaderboard.
-            top = [r for r in rows if r["sessions"]][: self.DASH_TOP]
-            if not top:
-                self.query_one("#dash-top-projects", Static).update(
-                    "nothing in this window")
-                return
-            lines = [f"{i}. {clip(r['project'] or r['project_key'], 26):<26}"
-                     f"{db.count_n(r['sessions'], 'session'):>12}"
-                     for i, r in enumerate(top, 1)]
-            self.query_one("#dash-top-projects", Static).update("\n".join(lines))
+        def _blank_text(self, in_window: int, window: str, span: str, verb: str) -> str:
+            """Which sentence an empty panel owes the reader.
 
-        def _render_dashboard_agents(self, rows) -> None:
-            top = [r for r in rows if r["sessions"]][: self.DASH_TOP]
+            Two blanks wear the same face. One is "this range placed no session at all" —
+            widen it and the panel fills. The other is "this range placed N sessions and
+            none carries the field the panel reads" — widening changes nothing, because Trae
+            never wrote that label. Measured on the real index: all 20 sessions in the
+            current 7d window have `agent` NULL, so Top agents sat blank beside a Sessions
+            panel reading 20 while telling the reader the *dates* were the problem.
+            """
+            if not in_window:
+                return f"none dated in {window}"
+            return f"no session{span} {verb}"
+
+        def _render_dashboard_projects(self, rows, blank: str) -> None:
+            self._render_leaderboard(rows, "#dash-top-projects",
+                                     lambda r: r["project"] or r["project_key"],
+                                     26, "no projects indexed", blank)
+
+        def _render_dashboard_agents(self, rows, blank: str) -> None:
+            self._render_leaderboard(rows, "#dash-top-agents",
+                                     lambda r: r["agent"],
+                                     24, "no agents installed", blank)
+
+        def _render_leaderboard(self, rows, wid: str, name_of, width: int,
+                                none_indexed: str, blank: str) -> None:
+            """One Dashboard leaderboard: the entities this range can say something about.
+
+            Zero-count rows are dropped, because a leaderboard of nothing-but-zeros is
+            noise. The row that keeps its place is the one with `undated` sessions: its
+            zero is the window's blind spot, not a measurement, and `window_count` prints
+            it as `-`. Three empties, three sentences — `none_indexed` is the panel's own
+            table being empty, `blank` is the range's, and they have different fixes.
+            """
+            top = [r for r in rows if r["sessions"] or r["undated"]][: self.DASH_TOP]
             if not top:
-                self.query_one("#dash-top-agents", Static).update(
-                    "nothing in this window")
+                self.query_one(wid, Static).update(
+                    none_indexed if not rows else blank)
                 return
-            lines = [f"{i}. {clip(r['agent'], 24):<24}"
-                     f"{db.count_n(r['sessions'], 'session'):>12}"
+            lines = [f"{i}. {clip(name_of(r), width):<{width}}"
+                     f"{db.window_count(r['sessions'], r['undated'], 'session'):>12}"
                      for i, r in enumerate(top, 1)]
-            self.query_one("#dash-top-agents", Static).update("\n".join(lines))
+            self.query_one(wid, Static).update("\n".join(lines))
 
         # Block characters for the per-day sparkline (index 0 = no activity).
         _SPARK = " ▁▂▃▄▅▆▇█"
@@ -1837,10 +1789,10 @@ if HAVE_TEXTUAL:
         # --- row select: route to detail screens ---------------------------
 
         def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-            # A session row opens its detail; a project, agent or model row opens
-            # the sessions behind it. The remaining kinds have no history to show —
-            # Trae records no usage per skill, plugin, MCP server, prompt or memory
-            # paragraph — so they say so instead of swallowing the key press.
+            # An agent row opens the sessions behind it, and a session row inside
+            # that screen opens its detail. The inventory kinds have no history to
+            # show — Trae records no usage per skill, plugin or MCP server — so
+            # they say so instead of swallowing the key press.
             key = event.row_key.value
             if not key or "\t" not in key:
                 return
@@ -1850,18 +1802,19 @@ if HAVE_TEXTUAL:
             if kind == "session":
                 self.push_screen(SessionScreen(rest))
             elif kind in ENTITY_FILTERS:
-                self.push_screen(EntityScreen(kind, rest))
+                # Inherit the tab's own window, so the list opening under a count is
+                # a count of the same thing, and its heading says which range that was.
+                pane = self.query_one(TabbedContent).active
+                start, end = self._bounds_for(pane)
+                self.push_screen(EntityScreen(kind, rest, start, end,
+                                              db.window_label(self._range_of(pane))))
             else:
                 self.notify(
                     "No detail: Trae CN records no usage per "
                     + self.NO_DETAIL_NOTE.get(kind, kind),
                     severity="warning")
 
-        NO_DETAIL_NOTE = {
-            "inv": "skill, plugin or MCP server",
-            "prompt": "prompt",
-            "mem": "memory paragraph",
-        }
+        NO_DETAIL_NOTE = {"inv": "skill, plugin or MCP server"}
 
         # --- R / S shortcuts ------------------------------------------------
 

@@ -60,6 +60,16 @@ class MaintenanceDocsTest(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, text)
         self.assertGreaterEqual(len(re.findall(r"[\u4e00-\u9fff]", text)), 20)
+        # The schema version belongs to the code, not to whoever last edited the table.
+        # This doc said "currently 3" through the v4 migration; a reader who trusted it
+        # would open a database the indexer is about to upgrade.
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import tcut_db as db
+        stated = re.search(r"schema version is currently (\d+)", text)
+        self.assertTrue(stated, "the compatibility note no longer states a schema version")
+        self.assertEqual(int(stated.group(1)), db.SCHEMA_VERSION,
+                         f"the doc claims v{stated.group(1)} but `ensure_schema` writes "
+                         f"v{db.SCHEMA_VERSION}")
 
     def test_measurement_doc_is_explicitly_safe_and_has_baseline(self):
         text = (DOCS / "measurements.md").read_text(encoding="utf-8")

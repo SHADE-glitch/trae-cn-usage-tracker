@@ -38,7 +38,7 @@ This creates a local Python environment for the TUI and installs `tcut` at `~/.l
 ## Commands
 
 ```sh
-tcut                         # open the ten-tab TUI
+tcut                         # open the five-tab TUI
 tcut sync                    # incremental index
 tcut sync --full             # snapshot, then rebuild
 tcut stats                   # overview
@@ -70,13 +70,17 @@ tcut stats --db /tmp/tcut.db
 
 ## TUI tabs
 
-Dashboard · Sessions · Projects · Prompts · Agents · Skills · Plugins · MCP · Memory · Usage
+Dashboard · Skills · Agents · Plugins · MCP
 
-The Usage tab is **not** cbut's Usage tab. Token, cost, request-count and cache panels do not exist here, because Trae CN never writes them to disk (measured — see `tcut format`). The tab holds the one consumption-derived number Trae does write: its credit balance, sampled once per app start, with the spend column labelled `spent ≥` because a fall between two samples is only a lower bound. Leaving the panels out rather than shipping them empty is deliberate: an empty token panel reads as "0 tokens" or as a broken widget, and neither is true.
+The tab set is cbut's, minus **Tools**, **Tokens** and **Usage**. Those three would read data Trae CN does not write in plaintext: snapshot git tags identify a tool call by id and never name the tool, the agent database is encrypted so no token count exists on disk, and there is no per-request record at all (measured — see `tcut format`). Nothing is shipped in their place. An empty token panel reads as "0 tokens" or as a broken widget, and neither is true. The tabs the two apps do share are invocation counters in cbut and installed inventory here, because Trae records no per-skill, per-plugin or per-MCP-server use.
 
-Dashboard · Sessions · Projects · Prompts · Agents · Skills · Plugins · MCP · Memory · Usage（共十个 tab）。Dashboard、Sessions、Projects、Agents、Usage 各自保留独立的时间范围；Prompts、Skills、Plugins、MCP、Memory 没有可用时间戳，因此为 all-time。
+The session-level views cbut has no room for — Sessions, Projects, Prompts, Memory — were dropped from the TUI on that same rule. Their rows are still indexed, and still printed: `tcut sessions`, `tcut projects`, `tcut prompts`, `tcut memory`. A session's detail (intent, actions, learned items, topics, the model it selected) is reached by opening an agent row. Dashboard and Agents each keep their own time range; Skills, Plugins and MCP carry no timestamp, so they are all-time and hide the range selector. 25 of this machine's 49 sessions have no measured timestamp anywhere in Trae's plaintext, but a session id opens with its own creation second, so the index stores that as `created_ts` and a range can still place the row — a time that came from the id prints with a leading `~`, because a derivation must not read as a measurement, and the line under the Dashboard panels says how many rows are in that state. A count reads `-` only for a session with no time anywhere (none on this machine), while a genuine `0` still means the entity owns no sessions in the range. The Dashboard's **Top projects** and **Top agents** keep the `-` rows instead of dropping them, and a blank panel names the blank it is showing: `no agents installed` (nothing indexed), `no session in this range names an installed agent` (the sessions are there, the label is not — 24 of this machine's 49 carry no agent at all, and every session in the current week is one of them), or `none dated in 7 days` (the range placed nothing). Widening the picker only helps with the last one. The credit balance Trae does log lives in the Dashboard's `Credits · sync` panel.
 
-Usage tab 不等于 cbut 的 Usage tab：token、成本、请求数、缓存这些面板**不存在**，因为 Trae CN 从不把它们写到盘上（已实测，见 `tcut format`）。这一页装的是 Trae 真的写了的 credit 余额（每次启动一条采样），消耗列标成 `spend ≥`，因为两次采样之间的下降只是下界。
+Dashboard · Skills · Agents · Plugins · MCP（共五个 tab）。
+
+tab 集合与 cbut 一致，只少 **Tools**、**Tokens**、**Usage** 三页：它们要读的数据 Trae CN 不以明文写在盘上——快照 git tag 只用 id 标记一次工具调用、从不写工具名，agent 库是加密的所以 token 数在盘上不存在，也没有任何逐请求记录（已实测，见 `tcut format`）。这三页一律不做：空白的 token 面板会被读成"用了 0"或"widget 坏了"，两者都不是事实。两边同名的 tab 在 cbut 那边是调用计数，在这里只能装安装清单，因为 Trae 不记录 skill / plugin / MCP server 的使用次数。
+
+会话、项目、输入历史、记忆文档这四个 cbut 没有位置放下的视图，按同一条规则从 TUI 移除。数据仍然索引、仍然可打印：`tcut sessions`、`tcut projects`、`tcut prompts`、`tcut memory`。会话详情（intent、actions、learned、topic、所选模型）从 agent 行进入。Dashboard 与 Agents 各自保留独立时间范围；Skills、Plugins、MCP 没有可用时间戳，因此为 all-time 并隐藏范围选择器。本机 49 个会话里有 25 个在明文里根本没有实测时间戳，但会话 id 的头四个十六进制字节就是它的创建秒，索引把这个秒存成 `created_ts`，窗口因此仍能定位这一行——来自 id 的时间前面带一个 `~`，因为推导不能长得像实测，Dashboard 下方的说明行会报出这种行有多少。计数只在对既无实测时间、又无推导时间的会话上显示 `-`（本机 0 个），而真正的 `0` 仍然表示这个实体在该范围内不拥有任何会话。Dashboard 的 **Top projects** 与 **Top agents** 不再丢掉 `-` 行；空白面板会说明自己空在哪：`no agents installed`（什么都没索引）、`no session in this range names an installed agent`（会话在，标签不在——本机 49 个会话有 24 个根本没有 agent，当前这一周的会话全是这种），或 `none dated in 7 days`（这个范围一个会话都没放下）。三种里只有最后一种该靠放宽范围来解决。Trae 真的写了的 credit 余额放在 Dashboard 的 `Credits · sync` 面板里。
 
 ## Storage and privacy
 
@@ -118,9 +122,9 @@ The suite uses stdlib `unittest` and Textual's `run_test()` harness. It builds t
 
 当前测试套件使用标准库 `unittest` 与 Textual 的 `run_test()`。测试构造临时 Trae fixture，从不打开真实 usage database，并覆盖 import/privacy 守卫、增量解析、快照、CLI 输出、TUI 交互和内容存储边界。
 
-Latest local run: `Ran 171 tests ... OK`.
+Latest local run: `Ran 193 tests ... OK`.
 
-最近一次本地运行：`Ran 171 tests ... OK`。
+最近一次本地运行：`Ran 193 tests ... OK`。
 
 ## Maintenance notes
 

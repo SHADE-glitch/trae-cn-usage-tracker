@@ -57,11 +57,16 @@ def table_or(headers, rows, empty="(nothing indexed — run `tcut sync`)") -> st
     return table(headers, rows)
 
 
-def _ms(value) -> str:
+def _ms(value, mark="") -> str:
+    """A timestamp as text, with ``~`` in front when its position was derived.
+
+    Only per-session times can carry the mark: an aggregate like a project's
+    ``last_seen`` mixes measured and derived rows, and no prefix would describe it.
+    """
     if not value:
         return "-"
     from datetime import datetime
-    return datetime.fromtimestamp(value / 1000).strftime("%Y-%m-%d %H:%M")
+    return mark + datetime.fromtimestamp(value / 1000).strftime("%Y-%m-%d %H:%M")
 
 
 # --- commands --------------------------------------------------------------
@@ -87,7 +92,8 @@ def cmd_sessions(conn, args):
     rows = db.q_sessions(conn, limit=args.limit or 30)
     print(table_or(
         ("when", "session", "project", "agent", "model", "turns", "tools", "intent"),
-        [(_ms(r["last_ts"]), r["session_id"][:12], r["project_key"] or "-",
+        [(_ms(r["shown_ts"], db.derived_mark(r["derived_ts"])), r["session_id"][:12],
+          r["project_key"] or "-",
           r["agent"] or "-", r["model_id"] or "-", r["turns"], r["toolcalls"],
           r["intent"])
          for r in rows]))
@@ -97,7 +103,8 @@ def cmd_recent(conn, args):
     rows = db.q_recent(conn, limit=args.limit or 30)
     print(table_or(
         ("when", "session", "project", "agent", "turns", "tools"),
-        [(_ms(r["last_ts"]), r["session_id"][:12], r["project_key"] or "-",
+        [(_ms(r["last_ts"], db.derived_mark(r["derived_ts"])), r["session_id"][:12],
+          r["project_key"] or "-",
           r["agent"] or "-", r["turns"], r["toolcalls"]) for r in rows]))
 
 

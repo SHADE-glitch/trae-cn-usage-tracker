@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trae-cn-usage-tracker"
-version = "0.3.0"
+version = "0.5.0"
 description = "Passive usage tracker for Trae CN: parses its on-disk data into a local SQLite index, shown in a Textual TUI."
 readme = "README.md"
 requires-python = ">=3.11"

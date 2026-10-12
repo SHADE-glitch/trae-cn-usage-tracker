@@ -2,7 +2,7 @@
 
 ``app.run_test()`` runs the real app against a real (throwaway) database in a simulated
 terminal, which is the only way to assert the things the interface actually promises: that
-the ten tabs exist in the order the docs list, that each renders its own columns, that the
+the five tabs exist in the order the docs list, that each renders its own columns, that the
 range selector is visible on exactly the windowed tabs, and that Enter on a session opens its
 detail screen and Escape comes back.
 
@@ -106,9 +106,22 @@ class TuiBase(unittest.TestCase):
         return tui.TrackerApp(db_path=self.db_path, clock=lambda: 1700002000.0,
                               config=cfg)
 
+    def _insert(self, sql, params=()):
+        """Write one row through the real connection helper, then close it.
+
+        The app opens its database read-only, so the fixtures have to be the only
+        writer — and they have to go through `open_db`, not `sqlite3.connect`, so the
+        hermetic tripwire sees every path.
+        """
+        import tcut_db as db
+        conn = db.open_db(self.db_path)
+        conn.execute(sql, params)
+        conn.commit()
+        conn.close()
+
 
 class StructureTest(TuiBase):
-    def test_the_ten_tabs_are_present_and_in_order(self):
+    def test_the_five_tabs_are_present_and_in_order(self):
         async def go():
             app = self.app()
             async with app.run_test(size=(120, 40)) as pilot:
@@ -116,7 +129,7 @@ class StructureTest(TuiBase):
                 return [pane.id for pane in tc.query(TabPane)]
         ids = run(go())
         self.assertEqual(ids, tui.TrackerApp.TAB_IDS)
-        self.assertEqual(len(ids), 10)
+        self.assertEqual(len(ids), 5)
 
     def test_every_wide_table_renders_exactly_its_columns(self):
         async def go():
@@ -136,31 +149,49 @@ class StructureTest(TuiBase):
                 self.assertEqual(labels[tid], list(cols),
                                  f"{tid} renders columns its registry does not declare")
 
-    def test_the_sessions_tab_lists_the_seeded_sessions(self):
+    def test_the_agents_tab_lists_the_seeded_agents(self):
         async def go():
             app = self.app()
             async with app.run_test(size=(140, 45)) as pilot:
-                table = app.query_one("#t-sessions", DataTable)
+                table = app.query_one("#t-agents", DataTable)
                 return table.row_count
         self.assertEqual(run(go()), 2)
 
-    def test_the_sessions_tab_shows_the_recorded_model_and_never_a_guess(self):
-        async def go():
+    def test_the_drill_down_reads_the_recorded_model_and_never_a_guess(self):
+        """The model column moved to `EntityScreen` with the Sessions tab.
+
+        The guard is the same one: a session Trae recorded no selection for must
+        read as unknown, not as the agent's default model. Cells are read by
+        position, not ``get_cell(index, label)`` — this Textual release keys cells
+        by RowKey, and a row index raises instead of reading.
+        """
+        async def go(agent):
             app = self.app()
             async with app.run_test(size=(140, 45)) as pilot:
-                table = app.query_one("#t-sessions", DataTable)
-                # Positional, not ``get_cell(index, label)``: this Textual release
-                # keys cells by RowKey, and a row index raises instead of reading.
-                labels = [str(c.label) for c in table.columns.values()]
-                pos = labels.index("model")
-                return sorted(str(table.get_row_at(idx)[pos])
-                              for idx in range(table.row_count))
-        cells = run(go())
-        self.assertEqual(cells, ["-", "agent_1__Model X_null"],
-                         "a session with no recorded selection must read as unknown")
+                host = app.screen
+                tc = host.query_one(TabbedContent)
+                tc.active = "tab-agents"
+                await pilot.pause()
+                table = host.query_one("#t-agents", DataTable)
+                for idx in range(table.row_count):
+                    if table.get_row_at(idx)[0] == agent:
+                        table.move_cursor(row=idx)
+                        break
+                table.focus()
+                await pilot.press("enter")
+                await pilot.pause()
+                entity = app.screen.query_one("#t-entity", DataTable)
+                pos = [str(c.label) for c in entity.columns.values()].index("model")
+                return [str(entity.get_row_at(i)[pos])
+                        for i in range(entity.row_count)]
+        for agent, want in (("builder", ["agent_1__Model X_null"]),
+                            ("reviewer", ["-"])):
+            with self.subTest(agent=agent):
+                self.assertEqual(run(go(agent)), want,
+                                 "a session with no recorded selection must read as unknown")
 
     def test_the_range_selector_is_visible_only_on_windowed_tabs(self):
-        """Prompts, the inventory tabs and Memory have no timestamp of their own."""
+        """Skills, Plugins and MCP have no timestamp of their own."""
         async def go():
             app = self.app()
             async with app.run_test(size=(140, 45)) as pilot:
@@ -172,8 +203,7 @@ class StructureTest(TuiBase):
                     seen[pane_id] = app._range_of(pane_id) is not None
                 return seen
         seen = run(go())
-        windowed = {"tab-dashboard", "tab-sessions", "tab-projects", "tab-agents",
-                    "tab-usage"}
+        windowed = {"tab-dashboard", "tab-agents"}
         for pane, has in seen.items():
             with self.subTest(pane=pane):
                 self.assertEqual(has, pane in windowed,
@@ -182,14 +212,20 @@ class StructureTest(TuiBase):
 
 class InteractionTest(TuiBase):
     def test_enter_on_a_session_opens_its_detail_and_escape_returns(self):
+        """Two hops now: an agent row opens its sessions, a row there opens the detail."""
         async def go():
             app = self.app()
             async with app.run_test(size=(140, 45)) as pilot:
                 tc = app.query_one(TabbedContent)
-                tc.active = "tab-sessions"
+                tc.active = "tab-agents"
                 await pilot.pause()
-                table = app.query_one("#t-sessions", DataTable)
+                table = app.query_one("#t-agents", DataTable)
                 table.focus()
+                await pilot.press("enter")
+                await pilot.pause()
+                mid = type(app.screen).__name__
+                entity = app.screen.query_one("#t-entity", DataTable)
+                entity.focus()
                 await pilot.press("enter")
                 await pilot.pause()
                 opened = type(app.screen).__name__
@@ -199,27 +235,32 @@ class InteractionTest(TuiBase):
                 await pilot.press("escape")
                 await pilot.pause()
                 after = type(app.screen).__name__
-                return opened, body_children, after
-        opened, children, after = run(go())
+                return mid, opened, body_children, after
+        mid, opened, children, after = run(go())
+        self.assertEqual(mid, "EntityScreen", "Enter on an agent row went nowhere")
         self.assertEqual(opened, "SessionScreen", "Enter did not open the session detail")
         self.assertGreater(children, 0, "the session detail screen rendered nothing")
-        self.assertNotEqual(after, "SessionScreen", "Escape did not leave the detail screen")
+        self.assertEqual(after, "EntityScreen", "Escape did not come back to the session list")
 
     def test_session_detail_shows_the_actions_learned_and_topics(self):
         async def go():
             app = self.app()
             async with app.run_test(size=(140, 45)) as pilot:
                 tc = app.query_one(TabbedContent)
-                tc.active = "tab-sessions"
+                tc.active = "tab-agents"
                 await pilot.pause()
-                table = app.query_one("#t-sessions", DataTable)
-                # Rows sort by last_ts DESC, so target the seeded session that has
-                # actions/learned/topics rather than assuming it is row 0.
+                table = app.query_one("#t-agents", DataTable)
+                # `builder` owns the seeded session with actions/learned/topics;
+                # reaching it through the agent filter is now the only route.
                 for idx in range(table.row_count):
-                    if table.get_row_at(idx)[1] == "aaaaaaaaaaaa":
+                    if table.get_row_at(idx)[0] == "builder":
                         table.move_cursor(row=idx)
                         break
                 table.focus()
+                await pilot.press("enter")
+                await pilot.pause()
+                entity = app.screen.query_one("#t-entity", DataTable)
+                entity.focus()
                 await pilot.press("enter")
                 await pilot.pause()
                 text = "\n".join(
@@ -232,7 +273,7 @@ class InteractionTest(TuiBase):
         self.assertIn("model · agent", text)
         self.assertIn("agent_1__Model X_null", text)
 
-    def test_tab_binding_cycles_through_all_ten(self):
+    def test_tab_binding_cycles_through_all_five(self):
         async def go():
             app = self.app()
             async with app.run_test(size=(120, 40)) as pilot:
@@ -273,9 +314,11 @@ class DashboardTest(TuiBase):
 class DrillDownTest(TuiBase):
     """A row that is keyed must go somewhere, or say why it cannot.
 
-    Before `EntityScreen` existed, seven of the eight tables stamped a `key_kind`
-    on their rows and the app's handler understood only `session` — Enter was a
-    no-op that looked like a frozen terminal.
+    The regression this inherits: before `EntityScreen` existed, most tables stamped
+    a `key_kind` on their rows while the app's handler understood only `session` —
+    Enter was a no-op that looked like a frozen terminal. The tab set was later cut
+    back to cbut's, which is why every route here starts on Agents or on an
+    inventory tab.
     """
 
     async def _open(self, pilot, pane, table_id, want_cell=None, column=0):
@@ -301,21 +344,6 @@ class DrillDownTest(TuiBase):
         await pilot.pause()
         return app
 
-    def test_a_project_row_opens_its_sessions(self):
-        async def go():
-            app = self.app()
-            async with app.run_test(size=(140, 45)) as pilot:
-                await self._open(pilot, "tab-projects", "t-projects")
-                name = type(app.screen).__name__
-                rows = [app.screen.query_one("#t-entity", DataTable).get_row_at(i)
-                        for i in range(app.screen.query_one("#t-entity", DataTable).row_count)]
-                return name, rows
-            return None, None
-        name, rows = run(go())
-        self.assertEqual(name, "EntityScreen", "a project row went nowhere")
-        self.assertEqual(len(rows), 2, "the project holds both seeded sessions")
-        self.assertEqual(sorted(r[1] for r in rows), ["aaaaaaaaaaaa", "bbbbbbbbbbbb"])
-
     def test_an_agent_row_opens_only_its_own_sessions(self):
         async def go():
             app = self.app()
@@ -333,12 +361,12 @@ class DrillDownTest(TuiBase):
         async def go():
             app = self.app()
             async with app.run_test(size=(140, 45)) as pilot:
-                await self._open(pilot, "tab-projects", "t-projects")
+                await self._open(pilot, "tab-agents", "t-agents", want_cell="reviewer")
                 await self._open(pilot, None, "t-entity", want_cell="bbbbbbbbbbbb", column=1)
                 return type(app.screen).__name__, app.screen.session_id
         name, sid = run(go())
         self.assertEqual(name, "SessionScreen",
-                         "the project screen stole a session row's own routing")
+                         "the entity screen stole a session row's own routing")
         self.assertEqual(sid, "bbbbbbbbbbbb2222")
 
     def test_an_unroutable_row_says_why_instead_of_silently_ignoring_enter(self):
@@ -413,49 +441,14 @@ class RegistryGuardTest(unittest.TestCase):
 
 
 
-class UsageTabTest(TuiBase):
-    """The Usage tab and the two new Dashboard panels.
+class DashboardPanelTest(TuiBase):
+    """The two Dashboard panels that survived the cut back to cbut's tab set.
 
-    cbut's Usage page counts requests, tokens and cache; none of that exists for
-    Trae CN. What this tab must still do is say so in the UI, and render the one
-    number Trae does write.
+    The credit series lost its tab, but the balance is still a number Trae really
+    writes, so it stays where a panel can show it. The `skipped` fetches must not
+    join the series as a zero and the spend figure is a lower bound — that half of
+    the rule is covered headlessly in test_stats.py, where `tcut credits` prints it.
     """
-
-    def _seed_credits(self):
-        import tcut_db as db
-        conn = db.open_db(self.db_path)
-        conn.executescript(
-            " INSERT INTO credit_events(source, ts, kind, remaining, generation)"
-            "  VALUES('/x/logs/20261001T100000/window1/renderer.log',"
-            " 1700000000000,'balance',1800,0),"
-            "  ('/x/logs/20261002T100000/window1/renderer.log',"
-            " 1700001500000,'balance',154.0244,0),"
-            "  ('/x/logs/20261002T100000/window1/renderer.log',"
-            " 1700001560000,'skipped',NULL,NULL);"
-        )
-        conn.commit()
-        conn.close()
-
-    def test_the_usage_tab_lists_balances_and_names_the_bound(self):
-        self._seed_credits()
-        async def go():
-            app = self.app()
-            async with app.run_test(size=(140, 45)) as pilot:
-                host = app.screen
-                host.query_one(TabbedContent).active = "tab-usage"
-                await pilot.pause()
-                table = host.query_one("#t-usage", DataTable)
-                return (str(host.query_one("#usage-note", Static).render()),
-                        [table.get_row_at(i) for i in range(table.row_count)],
-                        [str(c.label) for c in table.columns.values()])
-        note, rows, labels = run(go())
-        self.assertIn("Tokens, cost, requests and tool names are absent", note)
-        self.assertIn("tcut format", note)
-        self.assertEqual(labels, list(tui.USAGE_COLUMNS))
-        self.assertEqual(len(rows), 2, "the numberless skipped row joined the series")
-        self.assertEqual(rows[0][1], "154.0244")
-        self.assertEqual(rows[0][2], "1645.9756", "the fall between samples is the bound")
-        self.assertNotIn("token", " ".join(str(c) for r in rows for c in r).lower())
 
     def test_the_dashboard_shows_top_models_and_the_credit_panels(self):
         async def go():
@@ -479,6 +472,275 @@ class UsageTabTest(TuiBase):
         self.assertIn("Session sync", out["sync"])
         self.assertIn("not yet", out["sync"],
                       "a database the CLI indexed must not look like a failed sync")
+
+
+class WindowRuleTest(TuiBase):
+    """A window must never report a zero for rows it simply cannot see.
+
+    25 of this machine's 49 sessions carry no timestamp at all (their snapshot repos
+    have no tags), so a range drops them silently. Before this rule the Agents tab
+    printed `0 sessions` for an agent that owns 22 of them — and Enter on that row
+    opened a list of 22, because the screen read all-time.
+    """
+
+    def _seed_ranges(self):
+        """One agent whose session no window can date, one with an old dated session.
+
+        The clock is pinned to 1700002000 by ``TuiBase.app()`` and the Agents tab
+        defaults to 7d, so `oldbot`'s row (last_ts NULL) is invisible to every bounded
+        range and `farbot`'s (400 days back) is invisible only to the 7d one.
+        """
+        self._insert("INSERT INTO agents(name, kind, description)"
+                     " VALUES('oldbot',NULL,NULL),('farbot',NULL,NULL)")
+        self._insert("INSERT INTO sessions(session_id, project_key, agent, last_ts)"
+                     " VALUES('oldaaaaaaaaaaa','-p--p2-a','oldbot',NULL)")
+        self._insert("INSERT INTO sessions(session_id, project_key, agent, last_ts)"
+                     " VALUES('farbbbbbbbbbbb','-p--p2-a','farbot',?)",
+                     (int(1700002000 - 400 * 86400) * 1000,))
+
+    def _cells(self, range_key=None):
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                host = app.screen
+                if range_key is not None:
+                    app.tab_range["tab-agents"] = range_key
+                    app.refresh_data()
+                    await pilot.pause()
+                tc = host.query_one(TabbedContent)
+                tc.active = "tab-agents"
+                await pilot.pause()
+                table = host.query_one("#t-agents", DataTable)
+                return {table.get_row_at(i)[0]: table.get_row_at(i)[2]
+                        for i in range(table.row_count)}
+        return run(go())
+
+    def test_undated_rows_read_as_unknown_and_a_true_zero_stays_a_zero(self):
+        self._seed_ranges()
+        cells = self._cells()
+        self.assertEqual(cells["oldbot"], "-",
+                         "a window that cannot see a row must not claim there are none")
+        self.assertEqual(cells["farbot"], "0",
+                         "a dated row outside the range is a real zero, not unknown")
+        self.assertEqual(cells["builder"], "1", "the seeded in-window session must still count")
+
+    def test_all_time_shows_the_rows_that_no_bounded_range_can_see(self):
+        # The dash is only honest if All time really is the escape hatch. Until
+        # `window_bounds("all")` stopped applying an upper bound, an undated session
+        # was invisible in every range, and the tab read `-` forever.
+        self._seed_ranges()
+        cells = self._cells(range_key="all")
+        self.assertEqual(cells["oldbot"], "1", "All time must count the undated row")
+        self.assertEqual(cells["farbot"], "1", "All time must count the 400-day-old row")
+        self.assertEqual(cells["builder"], "1")
+
+    def test_the_drill_down_keeps_the_window_of_the_row_it_came_from(self):
+        self._insert("INSERT INTO agents(name, kind, description)"
+                     " VALUES('winbot',NULL,NULL)")
+        self._insert("INSERT INTO sessions(session_id, project_key, agent, last_ts)"
+                     " VALUES('win000000001','-p--p2-a','winbot',?)", (1700001500000,))
+        self._insert("INSERT INTO sessions(session_id, project_key, agent, last_ts)"
+                     " VALUES('win000000002','-p--p2-a','winbot',?)",
+                     (int(1700002000 - 400 * 86400) * 1000,))
+
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                host = app.screen
+                tc = host.query_one(TabbedContent)
+                tc.active = "tab-agents"
+                await pilot.pause()
+                table = host.query_one("#t-agents", DataTable)
+                count = None
+                for idx in range(table.row_count):
+                    if table.get_row_at(idx)[0] == "winbot":
+                        count = table.get_row_at(idx)[2]
+                        table.move_cursor(row=idx)
+                        break
+                table.focus()
+                await pilot.press("enter")
+                await pilot.pause()
+                entity = app.screen.query_one("#t-entity", DataTable)
+                ids = [entity.get_row_at(i)[1] for i in range(entity.row_count)]
+                title = str(app.screen.query("#entity-body Static")[0].render())
+                return count, ids, title
+        count, ids, title = run(go())
+        self.assertEqual(count, "1", "the row counts one in-window session")
+        self.assertEqual(ids, ["win000000001"],
+                         f"the screen listed {ids} — it ignored the range the count came from")
+        self.assertIn("days", title, "the heading should say which window this list is bound to")
+
+
+    def test_a_derived_creation_second_counts_in_the_window_and_is_marked(self):
+        """The whole point of `created_ts`: these rows used to be invisible to every range.
+
+        The id's prefix is built from the pinned clock so the derived second lands
+        inside the 7d window. The tab must then count it as a number — not `-`, which
+        now really means "no time anywhere" — and the row it drills to must carry the
+        `~` that says the position was derived rather than measured.
+        """
+        import tcut_db as db
+        sid = ("%08x" % 1700001000) + "0000000000000000"
+        self._insert("INSERT INTO agents(name, kind, description)"
+                     " VALUES('stamped',NULL,NULL)")
+        self._insert("INSERT INTO sessions(session_id, project_key, agent, last_ts)"
+                     " VALUES(?, '-p--p2-a', 'stamped', NULL)", (sid[:24],))
+        conn = db.open_db(self.db_path)
+        db.stamp_created_ts(conn)
+        conn.commit()
+        self.assertEqual(conn.execute(
+            "SELECT created_ts FROM sessions WHERE session_id = ?",
+            (sid[:24],)).fetchone()[0], 1700001000 * 1000)
+        conn.close()
+
+        cells = self._cells()
+        self.assertEqual(cells["stamped"], "1",
+                         "a session placed by its derived time must count, not read as unknown")
+
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                host = app.screen
+                tc = host.query_one(TabbedContent)
+                tc.active = "tab-agents"
+                await pilot.pause()
+                table = host.query_one("#t-agents", DataTable)
+                for idx in range(table.row_count):
+                    if table.get_row_at(idx)[0] == "stamped":
+                        table.move_cursor(row=idx)
+                        break
+                table.focus()
+                await pilot.press("enter")
+                await pilot.pause()
+                entity = app.screen.query_one("#t-entity", DataTable)
+                return [entity.get_row_at(i)[0] for i in range(entity.row_count)]
+        when = run(go())
+        self.assertEqual(len(when), 1, "the derived session did not reach the drill-down")
+        self.assertTrue(when[0].startswith("~"),
+                        f"{when[0]!r} reads like a measured activity time")
+
+
+class DashboardLeaderboardTest(TuiBase):
+    """Top projects / Top agents must not spend their emptiness on the wrong claim.
+
+    Both panels dropped every zero-count row so a leaderboard stayed a leaderboard. That
+    was a lie as soon as a row could be *invisible to the range* rather than idle in it:
+    an agent owning 22 undated sessions disappeared, and the panel printed "nothing in
+    this window" — the very sentence an index that never synced prints. `undated` gives
+    the row its slot back as a `-`, and the two kinds of empty now get two sentences.
+    """
+
+    def _past_window(self):
+        import tcut_db as db
+        start = int(1700002000 - 400 * 86400) * 1000
+        return db.CustomWindow(start, start + 86400 * 1000)
+
+    def _seed_hidden(self):
+        """One agent and one project whose only session has no time anywhere.
+
+        Nothing in the test path stamps `created_ts`, so this row is what the real
+        footprint still has: no tag, no derivable id, invisible to every bounded range.
+        """
+        self._insert("INSERT INTO agents(name, kind, description)"
+                     " VALUES('ghostbot',NULL,NULL)")
+        self._insert("INSERT INTO sessions(session_id, project_key, project, agent,"
+                     " last_ts) VALUES('ghostaaaaaaaaa','-g--p2-g','/home/user/G',"
+                     "'ghostbot',NULL)")
+
+    def _dash(self, range_key=None):
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                host = app.screen
+                if range_key is not None:
+                    app.tab_range["tab-dashboard"] = range_key
+                    app.refresh_data()
+                await pilot.pause()
+                return {
+                    "projects": str(host.query_one("#dash-top-projects",
+                                                   Static).render()),
+                    "agents": str(host.query_one("#dash-top-agents", Static).render()),
+                    "models": str(host.query_one("#dash-top-models", Static).render()),
+                    "sessions": str(host.query_one("#dash-sessions", Static).render()),
+                    "note": str(host.query_one("#dash-note", Static).render()),
+                }
+        return run(go())
+
+    @staticmethod
+    def _column(text, name, width):
+        """The value a leaderboard line prints for `name`, after its fixed-width field."""
+        for line in text.splitlines():
+            body = line.split(". ", 1)[-1]
+            if body.startswith(name):
+                return body[width:].strip()
+        return None
+
+    def test_a_row_no_window_can_date_keeps_its_slot_and_reads_as_unknown(self):
+        self._seed_hidden()
+        out = self._dash()
+        self.assertEqual(self._column(out["agents"], "ghostbot", 24), "-",
+                         "the panel hid an agent behind a zero it never measured")
+        self.assertEqual(self._column(out["agents"], "builder", 24), "1 session",
+                         "a real count lost its unit on the way to the dash")
+        self.assertEqual(self._column(out["projects"], "/home/user/G", 26), "-",
+                         "the same blind spot on the project side stayed invisible")
+
+    def test_an_empty_panel_names_the_missing_index(self):
+        # Nothing indexed at all: no project keys, no installed agents. This is the
+        # sentence that means "run tcut sync", and it must not be the one a window
+        # produces.
+        self._insert("UPDATE sessions SET project_key = NULL")
+        self._insert("DELETE FROM agents")
+        out = self._dash()
+        self.assertEqual(out["projects"].strip(), "no projects indexed")
+        self.assertEqual(out["agents"].strip(), "no agents installed")
+
+    def test_a_range_that_can_date_nothing_says_so(self):
+        # The seeded rows are all measured and all outside the picked span, so every
+        # project lists with a real zero — nothing is hidden, and saying
+        # "no projects indexed" here would send the reader to the wrong fix.
+        out = self._dash(range_key=self._past_window())
+        self.assertIn("none dated in", out["projects"])
+        self.assertIn("none dated in", out["agents"])
+        self.assertNotIn("no projects indexed", out["projects"])
+        self.assertNotIn("nothing in this window", out["projects"],
+                         "the one sentence that covered both cases is back")
+
+    def test_a_range_full_of_unattributed_sessions_does_not_blame_the_clock(self):
+        """The real footprint's actual state, reproduced: a full window, no labels.
+
+        Measured on this machine — all 20 sessions inside the current 7d window carry
+        `agent` NULL. Top agents printed `none dated in 7 days` beside a Sessions panel
+        reading 20, which sends the reader to widen a range that is already full.
+        """
+        self._insert("UPDATE sessions SET agent = NULL")
+        out = self._dash()
+        self.assertIn("no session in this range names an installed agent", out["agents"])
+        self.assertNotIn("none dated in", out["agents"],
+                         "the blank was still blamed on dates")
+        self.assertIn("Sessions", out["sessions"])
+        self.assertIn("2", out["sessions"], "the window was not in fact empty")
+
+    def test_the_models_panel_blames_the_window_that_hid_it(self):
+        # `q_top_models` filters in SQL, so a hidden model is absent rather than zero —
+        # the one panel where an empty list can mean either "never recorded" or
+        # "not in this span".
+        out = self._dash(range_key=self._past_window())
+        self.assertIn("none dated in", out["models"])
+        self.assertNotIn("no model selection recorded", out["models"])
+
+        self._insert("DELETE FROM session_models")
+        out = self._dash(range_key="all")
+        self.assertEqual(out["models"].strip(), "no model selection recorded")
+
+    def test_the_dashboard_discloses_the_sessions_it_could_not_measure(self):
+        self._seed_hidden()
+        out = self._dash()
+        self.assertIn("1 session with no measured time", out["note"],
+                      "the number that sizes the `~` caveat was on no panel at all")
+        self.assertIn("session id (~)", out["note"],
+                      "the marker every list prints has to be explained somewhere")
+        self.assertNotIn("nothing in this window", out["note"])
 
 
 if __name__ == "__main__":

@@ -349,19 +349,43 @@ def _commit_obj(ts):
     return zlib.compress(raw)
 
 
+def _tag_obj(name, commit_sha, tagger_ts):
+    """A loose annotated-tag object: what Trae's snapshot refs actually name."""
+    body = (f"object {commit_sha}\ntype commit\ntag {name}\n"
+            f"tagger T <t@b> {tagger_ts} +0800\n\nmessage\n").encode()
+    return zlib.compress(b"tag " + str(len(body)).encode() + b"\x00" + body)
+
+
 class SnapshotsTest(Base):
-    def _repo(self, session_id, tags):
+    def _repo(self, session_id, tags, annotated=False, tagger_skew=7):
+        """A throwaway snapshot repo with turn/toolcall tags.
+
+        ``annotated=True`` reproduces what is on the real machine: the ref names a
+        ``tag`` object whose ``object`` line points at the commit. Measured on one
+        session repo's 87 tags, *every* ref named a tag object. The lightweight form
+        this fixture used to write is why a parser that only recognised a ``commit ``
+        header stayed green here while returning ``None`` for all 89 turn and 139
+        toolcall timestamps at home.
+        """
         git = self.tmp / "snapshot" / session_id / "v2" / ".git"
         (git / "refs" / "tags").mkdir(parents=True)
         for tag, ts in tags.items():
-            sha = ("%040x" % (abs(hash(tag)) % (16 ** 40)))
+            commit_sha = ("%040x" % (abs(hash(tag)) % 16 ** 40))
+            sha = ("%040x" % (abs(hash(("tag", tag))) % 16 ** 40)) if annotated else commit_sha
+            if annotated:
+                self._object(git, commit_sha, _commit_obj(ts))
+            self._object(git, sha, _tag_obj(tag, commit_sha, ts + tagger_skew)
+                         if annotated else _commit_obj(ts))
             ref = git / "refs" / "tags" / tag
             ref.parent.mkdir(parents=True, exist_ok=True)
             ref.write_text(sha + "\n", encoding="ascii")
-            obj = git / "objects" / sha[:2] / sha[2:]
-            obj.parent.mkdir(parents=True, exist_ok=True)
-            obj.write_bytes(_commit_obj(ts))
         return git
+
+    @staticmethod
+    def _object(git, sha, payload):
+        obj = git / "objects" / sha[:2] / sha[2:]
+        obj.parent.mkdir(parents=True, exist_ok=True)
+        obj.write_bytes(payload)
 
     def test_turn_and_toolcall_tags_become_rows_with_timestamps(self):
         self._repo("sess1", {
@@ -399,6 +423,55 @@ class SnapshotsTest(Base):
         self.conn.commit()
         self.assertEqual(n, 0)
         self.assertEqual(self.one("SELECT COUNT(*) c FROM turns")["c"], 0)
+
+    def test_an_annotated_tag_is_peeled_to_the_commit_time(self):
+        self._repo("sess5", {"after-chat-turn-1": 1700000000,
+                             "toolcall-m1-c1": 1700000005}, annotated=True)
+        n = sync.scan_snapshots(self.conn, cfg(), self.tmp / "snapshot")
+        self.conn.commit()
+        self.assertEqual(n, 2)
+        got = {r["turn_id"]: r["ts"] for r in self.rows("SELECT turn_id, ts FROM turns")}
+        self.assertEqual(got, {"1": 1700000000 * 1000},
+                         "the tag object was not peeled, so the turn kept no time")
+        ev = self.one("SELECT ts FROM toolcall_events")
+        self.assertEqual(ev["ts"], 1700000005 * 1000,
+                         "a toolcall tag was stored undated — every windowed view "
+                         "would then treat the row as if it did not exist")
+        self.assertEqual(self.one("SELECT COALESCE(SUM(count),0) c FROM unparsed")["c"], 0,
+                         "a readable annotated tag must not be reported as a gap")
+
+    def test_the_tagger_line_stands_in_when_only_the_tag_object_is_readable(self):
+        # The commit object is the preferred time; a repo whose commit is gone (or
+        # packed) still knows when the tag itself was made. Measured at home: the
+        # tagger epoch sits about ten seconds after the commit it tags.
+        git = self._repo("sess6", {"after-chat-turn-2": 1700000000}, annotated=True)
+        commit_sha = "%040x" % (abs(hash("after-chat-turn-2")) % 16 ** 40)
+        (git / "objects" / commit_sha[:2] / commit_sha[2:]).unlink()
+        sync.scan_snapshots(self.conn, cfg(), self.tmp / "snapshot")
+        self.conn.commit()
+        self.assertEqual(self.one("SELECT ts FROM turns")["ts"], 1700000007 * 1000,
+                         "the tagger fallback did not fire")
+
+    def test_a_tag_whose_objects_cannot_be_read_is_counted_not_silently_undated(self):
+        # The gap this pins: a packed or garbage-collected object makes every
+        # timestamp NULL. That is survivable once, never silently again.
+        git = self.tmp / "snapshot" / "sess7" / "v2" / ".git"
+        (git / "refs" / "tags").mkdir(parents=True)
+        (git / "refs" / "tags" / "after-chat-turn-3").write_text("b" * 40 + "\n",
+                                                                 encoding="ascii")
+        sync.scan_snapshots(self.conn, cfg(), self.tmp / "snapshot")
+        self.conn.commit()
+        self.assertEqual(self.one("SELECT ts FROM turns")["ts"], None)
+        rows = self.rows("SELECT reason, count FROM unparsed")
+        self.assertEqual([(r["reason"], r["count"]) for r in rows],
+                         [("snapshot:time_unreadable", 1)],
+                         "an undated row was recorded without saying so")
+
+    def test_a_lightweight_ref_still_reads_its_commit(self):
+        self._repo("sess8", {"before-chat-turn-4": 1700000000})
+        sync.scan_snapshots(self.conn, cfg(), self.tmp / "snapshot")
+        self.conn.commit()
+        self.assertEqual(self.one("SELECT ts FROM turns")["ts"], 1700000000 * 1000)
 
     def test_an_unchanged_repo_is_not_re_read(self):
         self._repo("sess4", {"after-chat-turn-1": 1700000000})

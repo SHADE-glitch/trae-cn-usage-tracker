@@ -83,10 +83,128 @@ class RenderingTest(unittest.TestCase):
         self.assertRegex(lines[1], r"^-+(\s+-+)*$")
         self.assertEqual(lines[2].split(), ["1", "2"])
 
+    def test_the_all_range_has_neither_bound_so_undated_rows_are_visible(self):
+        """An upper bound of `now` silently drops every row with a NULL timestamp.
+
+        25 of this machine's 49 sessions are exactly that, so "All time" was a range
+        that showed them nowhere — the one view meant to be the escape hatch. Nothing
+        tested `window_bounds` before, which is how it stayed a day-window helper
+        with a half-written contract.
+        """
+        now = 1700000000000
+        self.assertEqual(db.window_bounds("all", now), (None, None))
+        start, end = db.window_bounds("7d", now)
+        self.assertIsNotNone(start, "a bounded range must still bound both ends")
+        self.assertEqual(end, now)
+
     def test_readonly_excludes_exactly_backup_and_restore(self):
         """The set drives whether a command opens the file writable; a mistake is a
         command that can change the database it was only asked to report on."""
         self.assertEqual(set(stats.COMMANDS) - stats.READONLY, {"backup", "restore"})
+
+
+class LeaderboardQueryTest(unittest.TestCase):
+    """The columns the Dashboard's leaderboards read, straight from the database.
+
+    The panels drop zero-count rows, which is only honest while a zero is a measurement.
+    `undated` is what separates "idle in this range" from "no time anywhere", and these
+    cases hold the query side of that contract: the column, the ranking it buys, the
+    fallback that places a derived row at all, and the prose form the dash renders in.
+    """
+
+    NOW = 1700002000000
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.conn = db.open_db(Path(self._tmp.name) / "usage.db")
+        self.addCleanup(self.conn.close)
+        db.ensure_schema(self.conn)
+        # `-z` is the blind spot and sorts last by key; `-b` is a measured zero and sorts
+        # before it. That ordering is deliberate: a fixture where the hidden row already
+        # wins the tie by alphabet proves nothing about the tie-break.
+        self.conn.executescript(
+            "INSERT INTO sessions(session_id, project_key, project, agent, last_ts)"
+            " VALUES('inwin000000000','-p--p2-a','/home/user/A','busy',1700001000000),"
+            # No tag, no stampable id: the row every bounded range loses.
+            "        ('ghost0000000000','-p--p2-z','/home/user/Z','hidden',NULL),"
+            # Measured, and measured 400 days ago — a real zero for a 7d window.
+            "        ('far0000000000000','-p--p2-b','/home/user/B','idle',"
+            "         1700002000000 - 400 * 86400000);"
+            " INSERT INTO agents(name, kind, description)"
+            " VALUES('busy',NULL,NULL),('hidden',NULL,NULL),('idle',NULL,NULL)"
+        )
+        self.conn.commit()
+
+    def bounds(self):
+        return db.window_bounds("7d", self.NOW)
+
+    def by_key(self, rows):
+        return {r["project_key"]: r for r in rows}
+
+    def test_a_project_reports_the_sessions_no_window_can_place(self):
+        start, end = self.bounds()
+        rows = self.by_key(db.q_projects(self.conn, start_ts=start, end_ts=end))
+        self.assertEqual((rows["-p--p2-z"]["sessions"], rows["-p--p2-z"]["undated"]),
+                         (0, 1), "an invisible project and an idle one came back identical")
+        self.assertEqual(rows["-p--p2-b"]["undated"], 0,
+                         "a dated-but-outside session was counted as having no time")
+        self.assertEqual(rows["-p--p2-a"]["undated"], 0)
+
+    def test_the_hidden_project_outranks_the_provably_idle_one(self):
+        # Both are zeros in this window; only one of them is a blind spot, and a capped
+        # leaderboard has to spend its last slot on the row it cannot explain.
+        start, end = self.bounds()
+        keys = [r["project_key"] for r in
+                db.q_projects(self.conn, limit=2, start_ts=start, end_ts=end)]
+        self.assertEqual(keys, ["-p--p2-a", "-p--p2-z"],
+                         "the tie-break ignored `undated`, so the hidden row lost its slot")
+
+    def test_a_row_placed_only_by_its_id_reaches_the_windowed_views(self):
+        """`COALESCE(last_ts, created_ts)` is the only reason these rows are visible.
+
+        Degrading it back to `last_ts` hides the session from the leaderboard, the KPI
+        and the per-day series at once — while `tcut sessions` still lists it, because
+        that query reads the pair itself. Three panels quietly losing a row nobody was
+        told about is the failure this pins.
+        """
+        derived = ("%08x" % 1700001000) + "0000000000000000"
+        self.conn.execute("INSERT INTO sessions(session_id, project_key, project, agent,"
+                          " last_ts) VALUES(?, '-p--p2-d', '/home/user/D', 'derived', NULL)",
+                          (derived,))
+        self.conn.commit()
+        # The other three ids are not hex, so this stamps exactly the new row.
+        self.assertEqual(db.stamp_created_ts(self.conn), 1)
+        self.conn.commit()
+
+        start, end = self.bounds()
+        rows = self.by_key(db.q_projects(self.conn, start_ts=start, end_ts=end))
+        self.assertEqual((rows["-p--p2-d"]["sessions"], rows["-p--p2-d"]["undated"]),
+                         (1, 0), "the derived session was neither counted nor admitted as"
+                                 " unknown — it just was not there")
+        kpi = db.q_kpi(self.conn, start, end)
+        self.assertEqual(kpi["sessions"], 2, "the KPI lost the row the fallback placed")
+        self.assertEqual(kpi["unmeasured"], 2,
+                         "a derived row is still unmeasured, window or no window")
+        self.assertEqual(sum(r["sessions"] for r in
+                             db.q_activity_daily(self.conn, start, end)), 2,
+                         "the per-day series dropped the row the KPI counted")
+
+    def test_the_kpi_separates_an_unmeasured_row_from_an_uncharted_one(self):
+        # `unmeasured` is the population the `~` marker belongs to: a session with no
+        # measured time, whether or not its id places it. It is all-time by definition —
+        # changing the range cannot turn a derivation into a measurement.
+        start, end = self.bounds()
+        self.assertEqual(db.q_kpi(self.conn, start, end)["unmeasured"], 1)
+        self.assertEqual(db.q_kpi(self.conn)["unmeasured"], 1,
+                         "the count moved with the window")
+
+    def test_window_count_keeps_the_word_only_for_a_real_count(self):
+        self.assertEqual(db.window_count(1, 0, "session"), "1 session")
+        self.assertEqual(db.window_count(12, 0, "session"), "12 sessions")
+        self.assertEqual(db.window_count(0, 0, "session"), "0 sessions")
+        self.assertEqual(db.window_count(0, 3, "session"), "-",
+                         "a dash is not a count, so it takes no unit")
 
 
 class CliBase(unittest.TestCase):
@@ -162,6 +280,61 @@ class CommandTest(CliBase):
         self.assertIn("a prompt", out)
         self.assertIn("/home/user/P", out,
                       "the prompt was labelled with the workspace id, not its folder")
+
+    def test_log_limit_is_the_prompts_cap_now_that_the_tui_has_no_prompts_tab(self):
+        """``log_limit`` has exactly one reader left: ``tcut prompts``.
+
+        The Prompts tab was removed to keep the TUI on cbut's tab set, and with it
+        went the four settings assertions that used to prove the value reached the
+        app. A setting no component reads is a dead key in a user's config file, so
+        this replaces those checks on the CLI side — and shows ``--limit`` winning,
+        which is the other half of ``args.limit or config["log_limit"]``.
+        """
+        conn = db.open_db(self.db_path)
+        conn.executemany(
+            "INSERT INTO prompts(workspace, idx, text) VALUES('ws1',?,?)",
+            [(i, f"prompt {i}") for i in range(1, 6)])
+        conn.commit()
+        conn.close()
+
+        rc, out = self.run_cli("prompts", env=clean_env(TCUT_LOG_LIMIT="3"))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(out.splitlines()), 5, out)   # header + rule + 3 rows
+        for want in ("a prompt", "prompt 1", "prompt 2"):
+            self.assertIn(want, out)
+        self.assertNotIn("prompt 3", out, "TCUT_LOG_LIMIT did not cap the rows")
+
+        rc, out = self.run_cli("prompts", "--limit", "5",
+                               env=clean_env(TCUT_LOG_LIMIT="3"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("prompt 4", out, "--limit must override the configured cap")
+        self.assertNotIn("prompt 5", out)
+
+    def test_sessions_marks_a_time_that_came_from_the_id(self):
+        """A derived position prints with `~`; a measured one prints bare.
+
+        Without the mark, `tcut sessions` would show a creation second guessed from
+        the id exactly like the activity time Trae wrote, and nobody downstream could
+        tell which rows were measured.
+        """
+        sid = ("%08x" % 1700000500) + "0000000000000000"
+        conn = db.open_db(self.db_path)
+        conn.execute("INSERT INTO sessions(session_id, project_key, project, agent,"
+                     " last_ts) VALUES(?,?,?,?,NULL)",
+                     (sid[:24], "-p--p2-a", "/home/user/P", "olddot"))
+        conn.commit()
+        db.stamp_created_ts(conn)          # also dates the fixture's other unstamped row
+        conn.commit()
+        self.assertEqual(conn.execute(
+            "SELECT created_ts FROM sessions WHERE session_id = ?",
+            (sid[:24],)).fetchone()[0], 1700000500 * 1000)
+        conn.close()
+
+        rc, out = self.run_cli("sessions")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.count("~"), 1,
+                         f"expected one derived time, marked, and one measured one, bare:\n{out}")
+        self.assertIn("olddot", out)
 
     def test_agents_and_models(self):
         rc, out = self.run_cli("agents")

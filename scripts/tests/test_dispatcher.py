@@ -6,6 +6,7 @@ rules without opening a real database.
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,12 @@ sys.path.insert(0, str(TESTS))
 import _hermetic  # noqa: E402,F401
 
 BIN = ROOT / "bin" / "tcut"
+TUI = ROOT / "scripts" / "tcut-tui.py"
+
+# The help text counts tabs in words, so the check needs the words.
+NUMERAL_WORDS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                 "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+                 "eleven": 11, "twelve": 12}
 
 
 class DispatcherTest(unittest.TestCase):
@@ -57,8 +64,20 @@ class DispatcherTest(unittest.TestCase):
     def test_help_reads_the_script_header(self):
         proc = self.run_bin("help")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("ten tabs", proc.stdout)
         self.assertIn("tcut sync --full", proc.stdout)
+        # The advertised tab count is checked against the app that composes the tabs.
+        # Asserting a literal word here once passed on a help text that had fallen
+        # behind the product, which is the whole reason the line existed.
+        claimed = re.search(r"interactive TUI \((\w+) tabs\)", proc.stdout)
+        self.assertTrue(claimed,
+                        f"bin/tcut no longer states a tab count where this checks: "
+                        f"{proc.stdout.splitlines()[:6]}")
+        word = claimed.group(1)
+        self.assertIn(word, NUMERAL_WORDS, f"unknown numeral word {word!r} in the help")
+        panes = len(re.findall(r"with TabPane\(", TUI.read_text(encoding="utf-8")))
+        self.assertTrue(panes, "the TUI source composes no TabPane at all — wrong file?")
+        self.assertEqual(NUMERAL_WORDS[word], panes,
+                         f"bin/tcut advertises {word} tabs, {TUI.name} composes {panes}")
 
     def test_an_invalid_interpreter_is_reported_before_exec(self):
         env = dict(self.env, TCUT_VENV=str(self.root / "missing-python"))

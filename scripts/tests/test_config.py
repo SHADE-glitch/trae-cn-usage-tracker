@@ -90,7 +90,9 @@ class DefaultsTest(unittest.TestCase):
         """
         tui = load_tui("tcut_tui_for_config")
         app = tui.TrackerApp
-        for key, attr in (("top_n", "DASH_TOP"), ("log_limit", "LOG_LIMIT"),
+        # `log_limit` is absent on purpose: it drives `tcut prompts`, not the TUI,
+        # which lost its Prompts tab when the tab set was cut back to cbut's.
+        for key, attr in (("top_n", "DASH_TOP"),
                           ("detail_limit", "DETAIL_LIMIT"), ("name_cap", "NAME_CAP")):
             self.assertEqual(
                 db.DEFAULTS[key], getattr(app, attr),
@@ -214,10 +216,9 @@ class WiringTest(unittest.TestCase):
             return tui.TrackerApp(db_path=db_path, config=config)
 
     def test_the_app_reads_its_limits_from_the_config(self):
-        app = self._app({"top_n": 2, "log_limit": 7, "detail_limit": 11,
+        app = self._app({"top_n": 2, "detail_limit": 11,
                          "refresh_secs": 5, "sync_secs": 30, "name_cap": 15})
         self.assertEqual(app.DASH_TOP, 2)
-        self.assertEqual(app.LOG_LIMIT, 7)
         self.assertEqual(app.DETAIL_LIMIT, 11)
         self.assertEqual(app.name_cap, 15,
                          "the app must expose the cap it will actually render with")
@@ -225,7 +226,6 @@ class WiringTest(unittest.TestCase):
     def test_with_no_config_the_app_keeps_the_shipped_defaults(self):
         app = self._app(None)
         self.assertEqual(app.DASH_TOP, db.DEFAULTS["top_n"])
-        self.assertEqual(app.LOG_LIMIT, db.DEFAULTS["log_limit"])
         self.assertEqual(app.DETAIL_LIMIT, db.DEFAULTS["detail_limit"])
         self.assertEqual(app.name_cap, db.DEFAULTS["name_cap"])
 
@@ -266,10 +266,10 @@ class CliWiringTest(unittest.TestCase):
 
     def test_the_settings_file_reaches_the_app_through_main(self):
         rc, app, out, cfg = self._main(
-            "top_n = 3\nlog_limit = 25\ndetail_limit = 50\nname_cap = 33\n")
+            "top_n = 3\ndetail_limit = 50\nname_cap = 33\n")
         self.assertEqual(rc, 0, out)
         self.assertIsNotNone(app, "main() never started the app")
-        self.assertEqual((app.DASH_TOP, app.LOG_LIMIT, app.DETAIL_LIMIT), (3, 25, 50),
+        self.assertEqual((app.DASH_TOP, app.DETAIL_LIMIT), (3, 50),
                          f"main() built an app that ignored {cfg}")
         self.assertEqual(app.name_cap, 33,
                          f"main() built an app ignoring the cap in {cfg}")
@@ -280,7 +280,6 @@ class CliWiringTest(unittest.TestCase):
         self.assertIsNotNone(app)
         self.assertEqual(app.DASH_TOP, db.DEFAULTS["top_n"])
         self.assertEqual(app.name_cap, db.DEFAULTS["name_cap"])
-        self.assertEqual(app.LOG_LIMIT, db.DEFAULTS["log_limit"])
         self.assertEqual(app.DETAIL_LIMIT, db.DEFAULTS["detail_limit"])
 
     def test_a_broken_file_stops_main_before_the_tui_starts(self):

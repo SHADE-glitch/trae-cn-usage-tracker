@@ -171,6 +171,71 @@ class ModelsMigrationTest(unittest.TestCase):
 
 
 
+class CreatedTsMigrationTest(unittest.TestCase):
+    """v4 adds a column for a *derived* time; upgrading must fill it, not leave 25
+    sessions unplaceable — and must never write into `last_ts`, which means measured.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.db_path = Path(self._tmp.name) / "usage.db"
+
+    def _columns(self, conn, table):
+        return [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')]
+
+    def _build_v3(self):
+        conn = db.open_db(self.db_path)
+        db.ensure_schema(conn)
+        # Exactly the v3 shape: every current table, minus the new column.
+        conn.execute("ALTER TABLE sessions DROP COLUMN created_ts")
+        conn.execute("INSERT INTO sessions(session_id, agent, last_ts) VALUES"
+                     "('6a6e9c0d36e7526885aad757','builder',NULL)")
+        conn.execute("INSERT INTO sessions(session_id, agent, last_ts) VALUES"
+                     "('measured000000000000000001','builder',1700000000000)")
+        conn.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
+        conn.commit()
+        conn.close()
+
+    def test_upgrading_a_v3_database_adds_the_column_and_backfills_it(self):
+        self._build_v3()
+        self.assertEqual(db.migrate(self.db_path), "migrated")
+        conn = db.open_db(self.db_path)
+        try:
+            self.assertIn("created_ts", self._columns(conn, "sessions"))
+            got = conn.execute("SELECT created_ts, last_ts FROM sessions"
+                               " WHERE session_id LIKE '6a6e%'").fetchone()
+            self.assertEqual(got[0], int("6a6e9c0d", 16) * 1000,
+                             "the derived creation second was not backfilled")
+            self.assertIsNone(got[1], "the migration wrote a derived time into last_ts,"
+                                      " which means measured activity")
+            odd = conn.execute("SELECT created_ts FROM sessions"
+                               " WHERE session_id = 'measured000000000000000001'").fetchone()
+            self.assertIsNone(odd[0],
+                              "an id whose prefix is not a hex second got guessed at")
+            self.assertEqual(
+                conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],
+                str(db.SCHEMA_VERSION))
+        finally:
+            conn.close()
+
+    def test_an_id_that_is_not_a_plausible_second_is_left_undated(self):
+        conn = db.open_db(self.db_path)
+        db.ensure_schema(conn)
+        for sid in ("0000000000000000000000ff",   # 1970 — not this app's era
+                    "ffffffff0000000000000000",   # year 2096 — not this app's era
+                    "6a6e9c0d36e7526885aad757"):  # a real session id
+            conn.execute("INSERT INTO sessions(session_id) VALUES(?)", (sid,))
+        conn.commit()
+        self.assertEqual(db.stamp_created_ts(conn), 1,
+                         "both impossible prefixes were stamped, or the real one was not")
+        conn.commit()
+        stamped = {r[0] for r in conn.execute(
+            "SELECT session_id FROM sessions WHERE created_ts IS NOT NULL")}
+        self.assertEqual(stamped, {"6a6e9c0d36e7526885aad757"})
+        conn.close()
+
+
 class FullRebuildSnapshotTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

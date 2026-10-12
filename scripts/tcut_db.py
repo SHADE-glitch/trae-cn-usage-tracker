@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # --- locations -------------------------------------------------------------
 
@@ -216,7 +216,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     turns      INTEGER DEFAULT 0,
     toolcalls  INTEGER DEFAULT 0,
     first_ts   INTEGER,          -- epoch ms, best known
-    last_ts    INTEGER
+    last_ts    INTEGER,
+    created_ts INTEGER           -- epoch ms *derived* from the session id, never
+                                 -- written into first_ts/last_ts; see time_text
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_last ON sessions(last_ts);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_key);
@@ -599,8 +601,54 @@ def _rebuild_models_per_account(conn: sqlite3.Connection) -> bool:
     return True
 
 
+def stamp_created_ts(conn) -> int:
+    """Fill ``sessions.created_ts`` from the session id's leading 4 hex bytes.
+
+    Measured here: that prefix is the creation second — against every session that
+    also has a tagged snapshot commit, the delta was 0.0 s in the median and 144 s at
+    worst. It lands in its **own** column because it is a creation time, not a
+    last-activity measurement; 25 of this machine's 49 sessions have no timestamp
+    anywhere in Trae's plaintext, and a range that cannot place them simply hides them.
+
+    An id whose prefix is not a plausible unix second is left unstamped rather than
+    guessed at.
+    """
+    created = 0
+    for (sid,) in conn.execute(
+            "SELECT session_id FROM sessions WHERE created_ts IS NULL").fetchall():
+        try:
+            secs = int(sid[:8], 16)
+        except ValueError:
+            continue
+        if not _CREATED_SEC_MIN < secs < _CREATED_SEC_MAX:
+            continue
+        conn.execute("UPDATE sessions SET created_ts = ? WHERE session_id = ?",
+                     (secs * 1000, sid))
+        created += 1
+    return created
+
+
+# A plausible unix second: 2020-09 through 2096. Outside it the id is not a timestamp.
+_CREATED_SEC_MIN = 1_600_000_000
+_CREATED_SEC_MAX = 4_000_000_000
+
+
+def _add_created_ts(conn) -> bool:
+    """v3 had nowhere to put a derived time, so undated sessions were invisible to
+    every range including All time. Adds the column and backfills it in place; no row
+    is rewritten and nothing is dropped, so an old database keeps its measured values.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+    if not cols or "created_ts" in cols:
+        return False
+    conn.execute("ALTER TABLE sessions ADD COLUMN created_ts INTEGER")
+    stamp_created_ts(conn)
+    return True
+
+
 MIGRATIONS: tuple = (
     ("models-per-account", _rebuild_models_per_account),
+    ("sessions-created-ts", _add_created_ts),
 )
 
 
@@ -730,6 +778,22 @@ def _on_time(conds) -> tuple[str, list]:
             [p for _, p in conds])
 
 
+# The instant a session is placed at: Trae's measured activity time when there is
+# one, else the creation second derived from the id. Reads paired with `derived_ts`
+# so a derived position can never be printed as if it were measured.
+SESSION_TIME = "COALESCE(last_ts, created_ts)"
+SESSION_TIME_S = "COALESCE(s.last_ts, s.created_ts)"
+# Rows no window can place at all: neither a measured time nor a derivable id. Every
+# count that can be windowed carries one of these alongside it, because "0 in this
+# range" and "nothing here has a time" print identically and mean opposite things.
+UNDATED = "last_ts IS NULL AND created_ts IS NULL"
+UNDATED_S = "s.last_ts IS NULL AND s.created_ts IS NULL"
+# Rows that carry no *measured* time, whether or not the id places them. This is the
+# population the `~` marker belongs to, so the disclosure and the marker count the same
+# set — an all-time number, since a measurement does not become one by changing range.
+UNMEASURED = "last_ts IS NULL"
+
+
 def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
                agent=None, model_id=None):
     """Sessions in the window, most recent first.
@@ -738,13 +802,16 @@ def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
     from the Projects, Agents and Models tabs. They match the same expressions the
     tables render, so a row you clicked on is the row you get.
 
-    The window is applied on ``last_ts`` (best-known activity time). Intent and
+    The window is applied on ``COALESCE(last_ts, created_ts)`` — measured activity when
+    Trae recorded one, else the creation second derived from the id — and every row
+    carries ``derived_ts`` so a caller can mark the second kind instead of passing it
+    off as a measurement. Intent and
     outcome are prose and are returned as stored (NULL when ``store_content``
     is off). ``model_id`` is the session's ``agent`` selection where Trae recorded
     one, else its ``solo_agent`` selection, else NULL — Trae keeps only the current
     choice per session, never a history of switches.
     """
-    conds = _time_conds(start_ts, end_ts, col="s.last_ts")
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
     if project is not None:
         conds.append(("COALESCE(s.project, s.project_key) = ?", project))
     if agent is not None:
@@ -760,6 +827,9 @@ def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
     sql = (
         "SELECT s.session_id, s.project_key, s.project, s.day, s.agent,"
         " s.intent, s.outcome, s.turns, s.toolcalls, s.first_ts, s.last_ts,"
+        " s.created_ts,"
+        f" {SESSION_TIME_S} AS shown_ts,"
+        " CASE WHEN s.last_ts IS NULL THEN 1 ELSE 0 END AS derived_ts,"
         " (SELECT sm.model_id FROM session_models sm"
         "   WHERE sm.session_id = s.session_id"
         "   ORDER BY CASE sm.agent_label WHEN 'agent' THEN 0"
@@ -770,7 +840,7 @@ def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
         " (SELECT COUNT(*) FROM session_learned l WHERE l.session_id = s.session_id)"
         "   AS learned"
         f" FROM sessions s{where}"
-        " ORDER BY s.last_ts DESC, s.session_id"
+        f" ORDER BY {SESSION_TIME_S} DESC, s.session_id"
     )
     params = [p for _, p in conds]
     if limit:
@@ -822,18 +892,24 @@ def q_projects(conn, limit=None, start_ts=None, end_ts=None):
     list but never summarized) are excluded — they are not projects. The window
     lives in the aggregate so an out-of-window project still lists with a zero
     session count.
+
+    ``undated`` is that project's share of the rows no window can place at all. It is
+    deliberately not windowed — it is what tells a real zero apart from this range's
+    blind spot, so read the pair with ``window_count``. It breaks the count tie in the
+    ordering: on a capped leaderboard a hidden project outranks a provably idle one.
     """
-    conds = _time_conds(start_ts, end_ts, col="last_ts")
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME)
     inner = (" CASE WHEN " + " AND ".join(c for c, _ in conds) + " THEN 1 ELSE 0 END"
              if conds else " 1")
     sql = (
         "SELECT project_key,"
         " MAX(project) AS project,"
         f" SUM({inner}) AS sessions,"
-        " MAX(last_ts) AS last_seen,"
-        " MIN(first_ts) AS first_seen"
+        f" SUM(CASE WHEN {UNDATED} THEN 1 ELSE 0 END) AS undated,"
+        f" MAX({SESSION_TIME}) AS last_seen,"
+        f" MIN({SESSION_TIME}) AS first_seen"
         " FROM sessions WHERE project_key IS NOT NULL GROUP BY project_key"
-        " ORDER BY sessions DESC, project_key"
+        " ORDER BY sessions DESC, undated DESC, project_key"
     )
     params = [p for _, p in conds]
     if limit:
@@ -869,14 +945,23 @@ def q_agents(conn, limit=None, start_ts=None, end_ts=None):
     the correlated subquery (never a WHERE on the outer query) so an agent with
     no sessions in the window still lists with a zero count rather than dropping
     out of the list.
+
+    ``undated`` counts that agent's sessions with **neither** a measured ``last_ts``
+    nor a derived ``created_ts`` — the rows no window can place at all. Render the pair
+    with ``window_count``: with no window the two can never disagree (every undated row
+    is counted), so a ``-`` only ever means "this range cannot tell". It breaks the
+    count tie in the ordering, so a capped list shows a hidden agent before an
+    agent whose dated sessions are simply elsewhere.
     """
-    conds = _time_conds(start_ts, end_ts, col="s.last_ts")
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
     and_clause, params = _on_time(conds)
     sql = (
         "SELECT a.name AS agent, a.kind,"
         f" (SELECT COUNT(*) FROM sessions s WHERE s.agent = a.name{and_clause})"
-        "   AS sessions"
-        " FROM agents a ORDER BY sessions DESC, a.name"
+        "   AS sessions,"
+        f" (SELECT COUNT(*) FROM sessions s"
+        f"   WHERE s.agent = a.name AND {UNDATED_S}) AS undated"
+        " FROM agents a ORDER BY sessions DESC, undated DESC, a.name"
     )
     if limit:
         sql += f" LIMIT {int(limit)}"
@@ -937,7 +1022,7 @@ def q_top_models(conn, limit=5, start_ts=None, end_ts=None):
     This is the honest shape of "top models" here: a session counts once for the
     model it was set to, because Trae records no per-request model and no tokens.
     """
-    conds = _time_conds(start_ts, end_ts, col="s.last_ts")
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
     where = (" AND " + " AND ".join(c for c, _ in conds)) if conds else ""
     sql = (
         "SELECT sm.model_id, COUNT(DISTINCT sm.session_id) AS sessions"
@@ -967,10 +1052,13 @@ def q_memory(conn, limit=None):
 
 
 def q_recent(conn, limit=30):
-    """Recent sessions, newest first."""
+    """Recent sessions, newest first, with the same time rule as ``q_sessions``."""
     return conn.execute(
-        "SELECT last_ts, session_id, project_key, agent, turns, toolcalls"
-        " FROM sessions ORDER BY last_ts DESC, session_id LIMIT ?",
+        f"SELECT {SESSION_TIME} AS last_ts, session_id, project_key, agent,"
+        " turns, toolcalls,"
+        " CASE WHEN last_ts IS NULL THEN 1 ELSE 0 END AS derived_ts"
+        " FROM sessions"
+        f" ORDER BY {SESSION_TIME} DESC, session_id LIMIT ?",
         (int(limit),),
     ).fetchall()
 
@@ -1030,6 +1118,35 @@ def count_n(value, singular, plural=None):
     """
     word = singular if value == 1 else (plural or singular + "s")
     return f"{value:,} {word}"
+
+
+def window_count(value, undated, unit=None):
+    """A windowed count as text — or ``-`` when the zero is the window's blind spot.
+
+    A session whose snapshot left no timestamp is invisible to every range except All
+    time, so "0 sessions" next to such an agent is not a measurement of none. It is the
+    same class of lie as an empty token panel reading as "0 tokens", and the dash is the
+    shape that says what is actually known: not zero, just not countable here.
+
+    With no window active, `undated` rows are counted by `value` itself, so the dash
+    cannot appear — the rule only ever fires when a range is what hid the rows.
+
+    `unit` asks for the prose form (`1 session` / `12 sessions`) instead of a bare
+    number, for the lists that read as sentences. A dash never takes the unit: the word
+    belongs to a count, and there is none.
+    """
+    if not value and undated:
+        return "-"
+    return count_n(value, unit) if unit else f"{value:,}"
+
+
+def derived_mark(derived) -> str:
+    """``~`` in front of a time that came from the session id rather than from Trae.
+
+    A creation second is not a last-activity measurement, and a table where the two look
+    identical would quietly upgrade a derivation into a fact. Both surfaces print it.
+    """
+    return "~" if derived else ""
 
 
 def _short_time(ms) -> str:
@@ -1144,12 +1261,14 @@ def window_bounds(range_key: str, now_ms: int):
     on. It never uses "now minus N hours", so the bounds are stable through the
     day and match what a person means by "today" / "the last 2 days".
 
-    ``start_ms`` is ``None`` for ``"all"`` (no lower bound).
+    ``"all"`` has **neither** bound. An upper bound of ``now`` would look harmless
+    and still drop every row whose timestamp is NULL — and on this machine 25 of 49
+    sessions are exactly that, so "All time" would show them nowhere.
     """
     days = USAGE_RANGES[range_key]
     end = int(now_ms)
     if days is None:
-        return None, end
+        return None, None
     midnight = datetime.fromtimestamp(end / 1000).replace(
         hour=0, minute=0, second=0, microsecond=0)
     start = midnight - timedelta(days=days - 1)
@@ -1183,11 +1302,15 @@ def _time_filter(start_ts, end_ts, col="ts"):
 def q_kpi(conn, start_ts=None, end_ts=None) -> dict:
     """Windowed counts for the Dashboard (the status-bar numbers, windowed).
 
-    ``sessions``/``projects`` are windowed on ``sessions.last_ts``; ``prompts``
-    and the inventory counts have no timestamp of their own, so they are
-    all-time. Both bounds ``None`` is all-time.
+    ``sessions``/``projects`` are windowed on the session's ``COALESCE(last_ts,
+    created_ts)``; ``prompts`` and the inventory counts have no timestamp of their own,
+    so they are all-time. Both bounds ``None`` is all-time.
+
+    ``unmeasured`` is also all-time on purpose: it is the population whose position came
+    from the id rather than from Trae, and a range does not turn a derivation into a
+    measurement. The Dashboard discloses it because every ``~`` on screen refers to it.
     """
-    where, params = _time_filter(start_ts, end_ts, col="last_ts")
+    where, params = _time_filter(start_ts, end_ts, col=SESSION_TIME)
 
     # ``p`` is passed explicitly: the windowed queries take the window params,
     # the all-time ones take none. Defaulting to ``params`` handed the window's
@@ -1204,6 +1327,7 @@ def q_kpi(conn, start_ts=None, end_ts=None) -> dict:
             f"SELECT COALESCE(SUM(toolcalls),0) FROM sessions{where}", params),
         "prompts": one("SELECT COUNT(*) FROM prompts"),
         "agents": one("SELECT COUNT(DISTINCT name) FROM agents"),
+        "unmeasured": one(f"SELECT COUNT(*) FROM sessions WHERE {UNMEASURED}"),
         "skills": one("SELECT COUNT(*) FROM inventory WHERE kind='skill'"),
         "plugins": one("SELECT COUNT(*) FROM inventory WHERE kind='plugin'"),
         "mcp": one("SELECT COUNT(*) FROM inventory WHERE kind='mcp'"),
@@ -1218,9 +1342,10 @@ def q_activity_daily(conn, start_ts=None, end_ts=None):
     with the local-day windows; the Dashboard draws the series as a sparkline.
     Days with no activity are simply absent — the caller fills the gaps.
     """
-    where, params = _time_filter(start_ts, end_ts, col="last_ts")
+    where, params = _time_filter(start_ts, end_ts, col=SESSION_TIME)
     return conn.execute(
-        "SELECT strftime('%Y-%m-%d', last_ts / 1000, 'unixepoch', 'localtime')"
+        f"SELECT strftime('%Y-%m-%d', {SESSION_TIME} / 1000,"
+        "                        'unixepoch', 'localtime')"
         "   AS day,"
         " COUNT(*) AS sessions"
         f" FROM sessions{where}"
@@ -1255,8 +1380,8 @@ def overview(conn) -> dict:
         "plugins": one("SELECT COUNT(*) FROM inventory WHERE kind='plugin'"),
         "mcp": one("SELECT COUNT(*) FROM inventory WHERE kind='mcp'"),
         "memory_docs": one("SELECT COUNT(DISTINCT scope) FROM memory"),
-        "first_ts": one("SELECT MIN(last_ts) FROM sessions"),
-        "last_ts": one("SELECT MAX(last_ts) FROM sessions"),
+        "first_ts": one(f"SELECT MIN({SESSION_TIME}) FROM sessions"),
+        "last_ts": one(f"SELECT MAX({SESSION_TIME}) FROM sessions"),
         "inventory": one("SELECT COUNT(*) FROM inventory"),
         # Records no handler claimed. Non-zero after a Trae update means the
         # format moved under us, not that you stopped using it.

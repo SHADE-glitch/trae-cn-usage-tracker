@@ -375,21 +375,27 @@ def scan_snapshots(conn, cfg, root=None) -> int:
         conn.execute(
             "INSERT OR IGNORE INTO sessions(session_id) VALUES(?)", (session_id,))
         for tag, sha in _iter_tags(git_dir):
-            ts = _commit_time(git_dir, sha)
             tm = _TURNTAG_RE.match(tag)
+            cm = None if tm else _TOOLCALLTAG_RE.match(tag)
+            if not (tm or cm):
+                continue
+            ts = _commit_time(git_dir, sha)
+            if ts is None:
+                # A row with no time is dropped by every windowed view, so a gap here
+                # is a fact about the store. It used to be silent, and silent is how
+                # "all timestamps NULL" passed for a year of green tests.
+                db.note_unparsed(conn, "snapshot:time_unreadable", 1)
             if tm:
                 conn.execute(
                     "INSERT OR REPLACE INTO turns(session_id, turn_id, ts)"
                     " VALUES(?,?,?)", (session_id, tm.group(1), ts))
                 rows += 1
                 continue
-            cm = _TOOLCALLTAG_RE.match(tag)
-            if cm:
-                conn.execute(
-                    "INSERT OR REPLACE INTO toolcall_events"
-                    "(session_id, message_id, toolcall_id, ts) VALUES(?,?,?,?)",
-                    (session_id, cm.group(1), cm.group(2), ts))
-                rows += 1
+            conn.execute(
+                "INSERT OR REPLACE INTO toolcall_events"
+                "(session_id, message_id, toolcall_id, ts) VALUES(?,?,?,?)",
+                (session_id, cm.group(1), cm.group(2), ts))
+            rows += 1
         _set_cursor(conn, str(git_dir), 0, _git_fingerprint(git_dir), 0)
     return rows
 
@@ -440,29 +446,68 @@ def _iter_tags(git_dir: Path):
                     yield name, sha
 
 
-def _commit_time(git_dir: Path, sha: str):
-    """Read a commit object's committer time as epoch ms, or ``None``.
+def _loose_object(git_dir: Path, sha: str):
+    """Return ``(type, body)`` for a loose object, or ``(None, None)``.
 
-    Reads the loose object directly (zlib + the commit header). If the object
-    is packed (not loose) this returns ``None`` — the turn/toolcall row is still
-    recorded, just without a timestamp.
+    Loose only. A packed object needs the pack index, and reading one means either
+    shipping a pack parser or shelling out to git — both worse than the gap. The gap
+    is not left silent: ``scan_snapshots`` reports every tag whose time it could not
+    get, because an unreadable object used to NULL out all 89 turn timestamps and 139
+    toolcall timestamps without saying so.
     """
     obj_path = git_dir / "objects" / sha[:2] / sha[2:]
     if not obj_path.is_file():
-        return None
+        return None, None
     try:
         raw = zlib.decompress(obj_path.read_bytes())
     except (OSError, zlib.error):
-        return None
-    header, _, body = raw.partition(b"\x00")
-    if not header.startswith(b"commit "):
-        return None
+        return None, None
+    header, _, body = raw.partition(b"\x00")        # "<type> <size>" NUL content
+    obj_type = header.partition(b" ")[0].decode(errors="replace")
+    return obj_type, body
+
+
+def _first_epoch(body: bytes, prefixes):
+    """First ``> <epoch> <tz>`` among the given header lines, as epoch ms."""
     for line in body.split(b"\n"):
-        if line.startswith(b"committer ") or line.startswith(b"author "):
-            m = re.search(rb">\s+(\d+)\s+[+-]\d{4}", line)
-            if m:
-                return int(m.group(1)) * 1000
+        for prefix in prefixes:
+            if line.startswith(prefix):
+                m = re.search(rb">\s+(\d+)\s+[+-]\d{4}", line)
+                if m:
+                    return int(m.group(1)) * 1000
     return None
+
+
+def _commit_time(git_dir: Path, sha: str):
+    """The timestamp a ref points at, as epoch ms, or ``None``.
+
+    Trae's snapshot tags are *annotated*: the ref names a ``tag`` object whose
+    ``object`` line points at the commit. Measured on one session repo's 87 tags —
+    every object the refs named was type ``tag``, and inside those commits
+    ``author`` and ``committer`` agreed on 87/87. So peel the tag, then read the
+    commit; a reader that only recognised a ``commit `` header returned ``None`` for
+    every one of them.
+
+    When only the tag object is readable, its ``tagger`` line is used: measured to
+    sit roughly ten seconds after the commit it tags, which is honest for a turn and
+    better than reporting no time at all.
+    """
+    tagger_ms = None
+    for _ in range(4):                    # tag -> commit, with room for a tag chain
+        obj_type, body = _loose_object(git_dir, sha)
+        if obj_type is None:
+            break
+        if obj_type == "commit":
+            return _first_epoch(body, (b"committer ", b"author ")) or tagger_ms
+        if obj_type == "tag":
+            tagger_ms = tagger_ms or _first_epoch(body, (b"tagger ",))
+            m = re.search(rb"^object ([0-9a-f]{40})$", body, re.M)
+            if not m:
+                break
+            sha = m.group(1).decode()
+            continue
+        break                             # a tree or blob is not something to time
+    return tagger_ms
 
 
 # --- 5. state.vscdb (prompts, agents, models) ------------------------------
@@ -996,7 +1041,8 @@ def _ingest_credit_line(conn, source, text) -> int:
 
 def finalize(conn) -> None:
     """Resolve real project paths, then recompute per-session counts and
-    best-known timestamps from the tags."""
+    best-known timestamps from the tags, and stamp the *derived* creation second
+    into its own column for whatever the tags left undated."""
     _resolve_projects(conn)
     conn.execute(
         "UPDATE sessions SET"
@@ -1015,6 +1061,7 @@ def finalize(conn) -> None:
         "      UNION ALL"
         "      SELECT ts FROM toolcall_events WHERE session_id = sessions.session_id)),"
         "   last_ts)")
+    db.stamp_created_ts(conn)
     conn.commit()
 
 
