@@ -87,11 +87,11 @@ class DecodeTest(unittest.TestCase):
 
     def test_p2_suffix_is_stripped_and_dashes_become_slashes(self):
         self.assertEqual(
-            sync.decode_project("-home-shade-Public--p2-ccbcb99c0123"),
-            "/home/shade/Public")
+            sync.decode_project("-home-user-Public--p2-ccbcb99c0123"),
+            "/home/user/Public")
 
     def test_a_key_without_the_suffix_still_decodes(self):
-        self.assertEqual(sync.decode_project("-home-shade-tmp"), "/home/shade/tmp")
+        self.assertEqual(sync.decode_project("-home-user-tmp"), "/home/user/tmp")
 
     def test_a_dotted_segment_is_known_to_be_lossy(self):
         """A real ``.`` in a path is indistinguishable from the separator.
@@ -101,8 +101,8 @@ class DecodeTest(unittest.TestCase):
         decoder honest about being a display convenience.
         """
         self.assertEqual(
-            sync.decode_project("-home-shade--local-share--p2-x"),
-            "/home/shade/local/share")
+            sync.decode_project("-home-user--local-share--p2-x"),
+            "/home/user/local/share")
 
     def test_day_round_trips_and_rejects_nonsense(self):
         ms = sync.parse_day("20260101")
@@ -134,7 +134,7 @@ class SessionMemoryTest(Base):
         return path
 
     def test_a_summary_line_becomes_a_session_with_its_prose(self):
-        self._write("-home-shade-Public--p2-a", "20260304", "abc123", [{
+        self._write("-home-user-Public--p2-a", "20260304", "abc123", [{
             "intent": "add a sync timer",
             "outcome": "timer installed",
             "actions": ["edited tcut-sync.py", "ran tests"],
@@ -146,8 +146,8 @@ class SessionMemoryTest(Base):
         s = self.one("SELECT * FROM sessions WHERE session_id = 'abc123'")
         self.assertEqual(s["intent"], "add a sync timer")
         self.assertEqual(s["outcome"], "timer installed")
-        self.assertEqual(s["project_key"], "-home-shade-Public--p2-a")
-        self.assertEqual(s["project"], "/home/shade/Public")
+        self.assertEqual(s["project_key"], "-home-user-Public--p2-a")
+        self.assertEqual(s["project"], "/home/user/Public")
         self.assertEqual(s["day"], "20260304")
         acts = self.rows("SELECT text FROM session_actions WHERE session_id='abc123' ORDER BY idx")
         self.assertEqual([r["text"] for r in acts], ["edited tcut-sync.py", "ran tests"])
@@ -220,7 +220,7 @@ class SessionMemoryTest(Base):
         self.assertIn("session_memory:not_json", reasons)
 
     def test_store_content_off_keeps_the_ids_and_drops_the_prose(self):
-        self._write("-home-shade-Public--p2-a", "20260304", "abc123", [{
+        self._write("-home-user-Public--p2-a", "20260304", "abc123", [{
             "intent": "secret", "outcome": "secret", "actions": ["secret"],
             "learned": ["secret"]}])
         sync.scan_session_memory(self.conn, cfg(store_content=False),
@@ -244,7 +244,7 @@ class TopicsTest(Base):
         (d / "topics.md").write_text(text, encoding="utf-8")
 
     def test_a_topic_line_is_parsed_into_its_parts(self):
-        self._write("-home-shade-Public--p2-a", "20260304",
+        self._write("-home-user-Public--p2-a", "20260304",
                     "[session_id: abc123 | topic_summary_time: 2026-03-04 05:06:07]"
                     " wired the sync timer\n")
         n = sync.scan_topics(self.conn, cfg(), self.tmp / "projects")
@@ -253,7 +253,7 @@ class TopicsTest(Base):
         t = self.one("SELECT * FROM topics")
         self.assertEqual(t["session_id"], "abc123")
         self.assertEqual(t["summary"], "wired the sync timer")
-        self.assertEqual(t["project_key"], "-home-shade-Public--p2-a")
+        self.assertEqual(t["project_key"], "-home-user-Public--p2-a")
         self.assertEqual(t["ts"], int(datetime(2026, 3, 4, 5, 6, 7).timestamp() * 1000))
 
     def test_a_line_that_does_not_match_and_a_bad_time_are_counted_separately(self):
@@ -293,7 +293,7 @@ class MemoryDocsTest(Base):
         root.mkdir()
         (root / "user_profile.md").write_text("Likes tabs.\n\nPrefers stdlib.\n",
                                               encoding="utf-8")
-        proj = root / "projects" / "-home-shade-Public--p2-a"
+        proj = root / "projects" / "-home-user-Public--p2-a"
         proj.mkdir(parents=True)
         (proj / "project_memory.md").write_text("# Title\nbody line\n\n- bullet\n",
                                                 encoding="utf-8")
@@ -301,7 +301,7 @@ class MemoryDocsTest(Base):
         self.conn.commit()
         self.assertEqual(n, 4, "two user-profile paragraphs plus two project-memory blocks")
         scopes = {r["scope"] for r in self.rows("SELECT DISTINCT scope FROM memory")}
-        self.assertEqual(scopes, {"user_profile", "project:-home-shade-Public--p2-a"})
+        self.assertEqual(scopes, {"user_profile", "project:-home-user-Public--p2-a"})
         # A headed block is one paragraph: the heading stays attached to its body.
         texts = [r["text"] for r in self.rows(
             "SELECT text FROM memory WHERE scope LIKE 'project:%' ORDER BY idx")]
@@ -448,7 +448,7 @@ class VscdbTest(Base):
             "somekey_AI.agent.model.model_list_map": {
                 "grp": [{"name": "Model X", "provider": "acme"}]},
             "memento/icube-ai-agent-storage": {"list": [{"sessionId": "sess2"}]},
-        }, folder="/home/shade/Public")
+        }, folder="/home/user/Public")
         n = sync.scan_state_vscdb(self.conn, cfg())
         self.conn.commit()
         self.assertGreaterEqual(n, 5)
@@ -457,7 +457,7 @@ class VscdbTest(Base):
         self.assertEqual(prompts, ["first prompt", "second prompt"],
                          "a blank entry must not become a prompt row")
         folder = self.one("SELECT folder FROM workspaces WHERE workspace='ws1'")["folder"]
-        self.assertEqual(folder, "/home/shade/Public")
+        self.assertEqual(folder, "/home/user/Public")
         self.assertEqual(self.one(
             "SELECT agent FROM sessions WHERE session_id='sess1'")["agent"], "builder")
         self.assertEqual(self.one(
@@ -485,10 +485,10 @@ class VscdbTest(Base):
             "SELECT COUNT(*) c FROM models WHERE name='Model X'")["c"], 1)
 
     def test_a_percent_encoded_uri_decodes_without_urllib(self):
-        self.assertEqual(sync._folder_from_uri("file:///home/shade/My%20Dir"),
-                         "/home/shade/My Dir")
-        self.assertEqual(sync._folder_from_uri("file:///home/shade/%E4%B8%AD%E6%96%87"),
-                         "/home/shade/中文")
+        self.assertEqual(sync._folder_from_uri("file:///home/user/My%20Dir"),
+                         "/home/user/My Dir")
+        self.assertEqual(sync._folder_from_uri("file:///home/user/%E4%B8%AD%E6%96%87"),
+                         "/home/user/中文")
         self.assertIsNone(sync._folder_from_uri("not-a-uri"))
 
     def test_a_vscdb_without_our_keys_is_harmless(self):
@@ -844,7 +844,7 @@ class CreditLogTest(Base):
 class FinalizeTest(Base):
     def test_counts_and_project_path_are_derived_from_the_rest(self):
         # A summary for a project key, plus a workspace.json that knows the real path.
-        proj = self.tmp / "memory" / "projects" / "-home-shade--local-share-x--p2-a" / "20260304"
+        proj = self.tmp / "memory" / "projects" / "-home-user--local-share-x--p2-a" / "20260304"
         proj.mkdir(parents=True)
         (proj / "session_memory_abc123.jsonl").write_text(
             json.dumps({"intent": "i", "outcome": "o"}) + "\n", encoding="utf-8")
@@ -865,7 +865,7 @@ class FinalizeTest(Base):
         # A workspace that resolves the lossy key back to a real, dotted path.
         self.conn.execute(
             "INSERT INTO workspaces(workspace, folder) VALUES(?,?)",
-            ("ws", "/home/shade/.local/share/x"))
+            ("ws", "/home/user/.local/share/x"))
         sync.finalize(self.conn)
 
         s = self.one("SELECT * FROM sessions WHERE session_id='abc123'")
@@ -873,7 +873,7 @@ class FinalizeTest(Base):
         self.assertEqual(s["toolcalls"], 1)
         self.assertEqual(s["first_ts"], 1700000000 * 1000)
         self.assertEqual(s["last_ts"], 1700000005 * 1000)
-        self.assertEqual(s["project"], "/home/shade/.local/share/x",
+        self.assertEqual(s["project"], "/home/user/.local/share/x",
                          "workspace.json did not resolve the lossy project key")
 
     def test_a_session_with_no_tags_keeps_zero_counts(self):

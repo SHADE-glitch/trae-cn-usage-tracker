@@ -70,9 +70,9 @@ class TuiBase(unittest.TestCase):
         conn.executescript(
             "INSERT INTO sessions(session_id, project_key, project, day, agent, intent,"
             " outcome, turns, toolcalls, first_ts, last_ts) VALUES"
-            " ('aaaaaaaaaaaa1111','-p--p2-a','/home/shade/P','20260304','builder',"
+            " ('aaaaaaaaaaaa1111','-p--p2-a','/home/user/P','20260304','builder',"
             "  'first intent','done',3,7,1700000000000,1700000600000),"
-            " ('bbbbbbbbbbbb2222','-p--p2-a','/home/shade/P','20260305','reviewer',"
+            " ('bbbbbbbbbbbb2222','-p--p2-a','/home/user/P','20260305','reviewer',"
             "  'second intent','ok',1,2,1700001000000,1700001600000);"
             " INSERT INTO session_actions(session_id, idx, text)"
             "  VALUES('aaaaaaaaaaaa1111',0,'did a thing');"
@@ -81,7 +81,7 @@ class TuiBase(unittest.TestCase):
             " INSERT INTO topics(session_id, ts, project_key, summary)"
             "  VALUES('aaaaaaaaaaaa1111',1700000100000,'-p--p2-a','a topic');"
             " INSERT INTO prompts(workspace, idx, text) VALUES('ws1',0,'a prompt');"
-            " INSERT INTO workspaces(workspace, folder) VALUES('ws1','/home/shade/P');"
+            " INSERT INTO workspaces(workspace, folder) VALUES('ws1','/home/user/P');"
             " INSERT INTO agents(name, kind, description)"
             "  VALUES('builder','custom','builds'),('reviewer','custom','reviews');"
             " INSERT INTO models(account, group_name, name, provider,"
@@ -263,7 +263,7 @@ class DashboardTest(TuiBase):
         out = run(go())
         self.assertIn("2", out["sessions"], "the dashboard session count is wrong")
         self.assertIn("1", out["projects"], "the dashboard project count is wrong")
-        self.assertIn("/home/shade/P", out["top"], "the top-projects list is empty")
+        self.assertIn("/home/user/P", out["top"], "the top-projects list is empty")
         # #dash-inv-skills is a count panel ("Skills                 1"), not a name list.
         self.assertIn("Skills", out["inv"])
         self.assertIn("1", out["inv"], "the dashboard skill count is wrong")

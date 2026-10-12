@@ -80,7 +80,7 @@ SENTINELS = (SENTINEL_INTENT, SENTINEL_OUTCOME, SENTINEL_ACTION, SENTINEL_LEARNE
 # Identifiers that MUST be stored with store_content OFF: session ids, the project path, the
 # agent name, the model, the skill. Without these the "no sentinel" scan could pass on a
 # database that indexed nothing at all.
-MUST_STORE = ("abc123def456", "/home/shade/Public", "builder", "Model X", "my-skill")
+MUST_STORE = ("abc123def456", "/home/user/Public", "builder", "Model X", "my-skill")
 
 
 def dynamic_module_calls(src, filename="<src>"):
@@ -100,7 +100,7 @@ def dynamic_module_calls(src, filename="<src>"):
 def build_fixture(root: Path, tmp: Path):
     """A Trae-shaped tree carrying every sentinel, plus a workspace.json with the real path."""
     root = Path(root)
-    proj = root / "memory" / "projects" / "-home-shade-Public--p2-abc" / "20260304"
+    proj = root / "memory" / "projects" / "-home-user-Public--p2-abc" / "20260304"
     proj.mkdir(parents=True)
     (proj / "session_memory_abc123def456.jsonl").write_text(json.dumps({
         "intent": SENTINEL_INTENT, "outcome": SENTINEL_OUTCOME,
@@ -110,7 +110,7 @@ def build_fixture(root: Path, tmp: Path):
         f"[session_id: abc123def456 | topic_summary_time: 2026-03-04 05:06:07]{SENTINEL_TOPIC}\n",
         encoding="utf-8")
     (root / "memory" / "user_profile.md").write_text(SENTINEL_MEMORY + "\n", encoding="utf-8")
-    (root / "memory" / "projects" / "-home-shade-Public--p2-abc" / "project_memory.md").write_text(
+    (root / "memory" / "projects" / "-home-user-Public--p2-abc" / "project_memory.md").write_text(
         SENTINEL_MEMORY + " (project)\n", encoding="utf-8")
 
     ws = root / "User" / "workspaceStorage" / "ws1"
@@ -128,7 +128,7 @@ def build_fixture(root: Path, tmp: Path):
     conn.commit()
     conn.close()
     (ws / "workspace.json").write_text(
-        json.dumps({"folder": "file:///home/shade/Public"}), encoding="utf-8")
+        json.dumps({"folder": "file:///home/user/Public"}), encoding="utf-8")
 
     (root / "skills" / "my-skill").mkdir(parents=True)
     return root

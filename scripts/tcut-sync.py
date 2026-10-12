@@ -62,7 +62,7 @@ _TOOLCALLTAG_RE = re.compile(r"^toolcall-([^-]+)-(.+)$")
 def decode_project(key: str) -> str:
     """Best-effort project path from Trae's memory directory name.
 
-    ``-home-shade-Public--p2-ccbcb99c...`` decodes to ``/home/shade/Public``.
+    ``-home-user-Public--p2-ccbcb99c...`` decodes to ``/home/user/Public``.
     The ``--p2-<hash>`` suffix is a stable per-project id, not a path. A real
     hyphen in a directory name cannot be told from the separator, so this is a
     display convenience, not a guaranteed path.

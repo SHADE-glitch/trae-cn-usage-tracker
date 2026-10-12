@@ -102,14 +102,14 @@ class CliBase(unittest.TestCase):
         conn.executescript(
             "INSERT INTO sessions(session_id, project_key, project, day, agent, intent,"
             " outcome, turns, toolcalls, first_ts, last_ts)"
-            " VALUES('abc123def456','-p--p2-a','/home/shade/P','20260304','builder',"
+            " VALUES('abc123def456','-p--p2-a','/home/user/P','20260304','builder',"
             " 'wire the timer','done',3,7,1700000000000,1700000600000);"
             " INSERT INTO session_actions(session_id, idx, text) VALUES('abc123def456',0,'did a thing');"
             " INSERT INTO session_learned(session_id, idx, text) VALUES('abc123def456',0,'learnt a thing');"
             " INSERT INTO topics(session_id, ts, project_key, summary)"
             " VALUES('abc123def456',1700000100000,'-p--p2-a','a topic');"
             " INSERT INTO prompts(workspace, idx, text) VALUES('ws1',0,'a prompt');"
-            " INSERT INTO workspaces(workspace, folder) VALUES('ws1','/home/shade/P');"
+            " INSERT INTO workspaces(workspace, folder) VALUES('ws1','/home/user/P');"
             " INSERT INTO agents(name, kind, description) VALUES('builder','custom','builds');"
             " INSERT INTO models(account, group_name, name, provider,"
             " consumption_rate, context_window) VALUES"
@@ -154,13 +154,13 @@ class CommandTest(CliBase):
     def test_projects_lists_the_real_folder(self):
         rc, out = self.run_cli("projects")
         self.assertEqual(rc, 0, out)
-        self.assertIn("/home/shade/P", out)
+        self.assertIn("/home/user/P", out)
 
     def test_prompts_are_grouped_by_the_real_folder(self):
         rc, out = self.run_cli("prompts")
         self.assertEqual(rc, 0, out)
         self.assertIn("a prompt", out)
-        self.assertIn("/home/shade/P", out,
+        self.assertIn("/home/user/P", out,
                       "the prompt was labelled with the workspace id, not its folder")
 
     def test_agents_and_models(self):
