@@ -65,19 +65,20 @@
 - Six new cases, each proved red by reverting its own fix in a throwaway copy (no peel, no
   tagger fallback, no `unparsed` note, dash off, bounds not passed) against a green control run
   of the unmutated copy first.
-- Every rule added since then was provoked the same way — **thirteen rules, sixteen runs**,
-  each against a green control: `undated` removed from the query, its tie-break removed from
-  the ordering, the agent `undated` subquery left uncorrelated, `window_count`'s unit
-  ignored, the leaderboard back to dropping zero rows, the two empties collapsed into one
-  sentence, Top models back to blaming the indexer, the disclosure line deleted, `unmeasured`
-  removed from the KPI, the v4 migration's backfill and its plausibility bound removed,
-  the `~` deleted, and the `COALESCE` fallback stripped from one time expression and then
-  from both. **Two survived the first sweep**, and both survivals were the fixture's fault,
-  not the rule's: the ordering tie-break passed because the project keys happened to sort the
-  hidden row into its slot anyway, and the fallback passed because only the un-aliased
-  expression had been mutated while the tab under test reads the aliased one. The fixture
-  was rebuilt so `-z` is the hidden key and `-b` the idle one, and a new case covers the
-  three windowed views the fallback feeds — both then went red on their own.
+- Every rule added since then was provoked the same way — **seventeen reversals over
+  nineteen runs**, each against a green control: `undated` removed from the query, its
+  tie-break removed from the ordering, the agent `undated` subquery left uncorrelated,
+  `window_count`'s unit ignored, the leaderboard back to dropping zero rows, two of the three
+  empties collapsed onto the other's sentence (both directions), Top models back to blaming
+  the indexer, the disclosure line deleted, `unmeasured` removed from the KPI, the v4
+  migration's backfill and its plausibility bound removed, the `~` deleted, and the
+  `COALESCE` fallback stripped from one time expression and then from both. **Two survived the
+  first sweep**, and both survivals were the fixture's fault, not the rule's: the ordering
+  tie-break passed because the project keys happened to sort the hidden row into its slot
+  anyway, and the fallback passed because only the un-aliased expression had been mutated
+  while the tab under test reads the aliased one. The fixture was rebuilt so `-z` is the
+  hidden key and `-b` the idle one, and a new case covers the three windowed views the
+  fallback feeds — both then went red on their own.
 - `window_bounds("all")` also dropped its upper bound. With `last_ts < now` it excluded every
   row that has no timestamp, so "All time" showed the 25 undated sessions nowhere — the one
   range that is supposed to be the escape hatch was the second place they went missing. No
@@ -99,8 +100,9 @@
 - 数据库升到 **v4**：新增 `sessions.created_ts`，值取自会话 id 的前四个十六进制字节。2026-10-12 就着 24 个"同时带有时间戳 turn"的会话重测：中位差 0.0 秒、最差 144 秒，而且**没有任何 turn 早于它**——它是下界，不是对中间的猜测。它待在自己的列里，只通过 `COALESCE(last_ts, created_ts)`（`db.SESSION_TIME`）进入窗口，这个表达式现在就是所有窗口视图共用的那一个；`first_ts`/`last_ts` 的含义不变，仍是实测活动，升级不重写任何一行，旧库实测到的东西一条不少。此前任何窗口都放不下的那 25 个会话，现在放得下了。
 - 来自 id 的位置在 TUI 与 `tcut sessions`/`tcut recent` 里都打成 `~10-07 10:45`（`db.derived_mark`），Dashboard 下方的说明行报出这种行有多少（`q_kpi["unmeasured"]`，本机 49 个里 25 个）。一张推导与实测长得一模一样的表，就是推导被悄悄当成事实的地方。
 - Dashboard 的两个排行不再丢掉"自己无法定位"的行。`q_projects` 现在和 `q_agents` 一样在 `sessions` 旁边报 `undated`，两边都把它排在真正的 0 之前，所以在有条数上限的排行里，被挡住的对象保住位置并显示 `-`。空白面板从一句话变成两句，因为它们本来就是两个问题：`no agents installed` 要的是 sync，`none dated in 7 days` 要的是更宽的范围。**Top models** 此前把窗口的锅甩给索引器——选中记录明明在库里，只是落在区间外，面板却说"no model selection recorded"。
+- 把改好的界面拿去跑真机时才撞见的一件事：**Top agents 整块空白，而旁边的 Sessions 写着 20**，面板给的句子还在怪时间。真正缺的是标签。2026-10-12 实测：49 个会话里 24 个根本没有 `agent`，当前 7d 窗口里那 20 个全在这 24 个之中——`agent` 只由 memory 记录写入，而 `agents` 装的是安装清单。空白面板现在说自己空在哪（`db._blank_text`）：`none dated in <范围>`、`no session in this range names an installed agent`、`no agents installed`，三句话对三种修法；从前一句话把两种情况都打发去看范围选择器，而拉范围对那两种毫无作用。
 - 新增六个用例，每个都在一次性副本里把自己对应的修复撤掉来逼红（不 peel、不用 tagger 回退、不记 `unparsed`、去掉 `-`、不传时间窗），并且先跑未改副本作对照（对照必须绿，否则是仪器错）。
-- 此后每条新规则都用同一个办法逼红——**十三条规则、十六次跑**，每次都先跑未改副本作对照：从查询里删掉 `undated`、从排序里删掉它的并列优先、把 agent 的 `undated` 子查询去掉关联、让 `window_count` 忽略单位、排行改回丢掉 0 行、两种空白并成一句、Top models 改回把窗口的锅甩给索引器、删掉说明行、从 KPI 里删掉 `unmeasured`、撤掉 v4 迁移的回填与合理性上下界、删掉 `~`、把 `COALESCE` 兜底从一个时间表达式剥掉再从两个都剥掉。**第一轮有两条活了下来**，而且两条都是 fixture 的错、不是规则的错：排序那条是因为项目键本身就把隐藏行排进了名额（换了键名才暴露），兜底那条是因为只改了不带别名的表达式、而被测的那个 tab 读的是带别名的另一个。fixture 重建成 `-z` 是隐藏行、`-b` 是实测 0 行，另加一条用例盯住兜底喂给的三个窗口视图——两条随后各自独立变红。
+- 此后每条新规则都用同一个办法逼红——**十七次撤改、十九次跑**，每次都先跑未改副本作对照：从查询里删掉 `undated`、从排序里删掉它的并列优先、把 agent 的 `undated` 子查询去掉关联、让 `window_count` 忽略单位、排行改回丢掉 0 行、三种空白里取两种彼此并句（两个方向都试了一遍）、Top models 改回把窗口的锅甩给索引器、删掉说明行、从 KPI 里删掉 `unmeasured`、撤掉 v4 迁移的回填与合理性上下界、删掉 `~`、把 `COALESCE` 兜底从一个时间表达式剥掉再从两个都剥掉。**第一轮有两条活了下来**，而且两条都是 fixture 的错、不是规则的错：排序那条是因为项目键本身就把隐藏行排进了名额（换了键名才暴露），兜底那条是因为只改了不带别名的表达式、而被测的那个 tab 读的是带别名的另一个。fixture 重建成 `-z` 是隐藏行、`-b` 是实测 0 行，另加一条用例盯住兜底喂给的三个窗口视图——两条随后各自独立变红。
 - `window_bounds("all")` 同时去掉了上界。带着 `last_ts < now` 时，它把每一行"没有时间戳"的记录都排除在外，于是 All time 也照样看不见那 25 个无日期会话——本该是逃生口的那个范围，成了它们第二次消失的地方。`window_bounds` 此前没有任何测试碰过，现在有两个用例盯着它。
 - 修掉清单错误：`pyproject.toml` 还写着 `0.3.0`，而 CHANGELOG 已到 `0.4.0`。
 - 测试套件 **192** 个（删 tab 前 171：删掉两个由 tab 驱动的用例，`log_limit` 新增一个 CLI 用例，时间与窗口规则新增八个，推导创建时间新增四个，排行榜与喂给它们的兜底新增十个）。
