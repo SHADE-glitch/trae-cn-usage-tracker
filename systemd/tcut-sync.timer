@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Trae CN usage tracker sync
+Documentation=https://github.com/SHADE-glitch/trae-cn-usage-tracker/blob/master/README.md
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+AccuracySec=1h
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

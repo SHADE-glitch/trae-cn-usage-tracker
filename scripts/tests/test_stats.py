@@ -1,0 +1,339 @@
+"""test_stats.py — the headless CLI, driven as a child process.
+
+``tcut-stats.py`` is the part of this tool that runs without the TUI's venv, and it is also
+the ``tcut`` default, so a break here is the first thing a user meets. It has a hyphen in its
+name and its own ``argparse`` surface, so these cases run it the way a person does — as a
+subprocess with a ``--db`` pointing at a throwaway database — rather than importing it.
+
+Four properties:
+
+1. **Every command runs and prints its shape.** A command that raises, or that prints an empty
+   table instead of its headers, is worse than one that is missing.
+2. **``--db`` works in both positions.** ``tcut --db X stats`` and ``tcut stats --db X`` are the
+   same request; the second form used to silently fall back to the default database, so both
+   are pinned.
+3. **A read-only command never touches a database that is not there**, and says so instead of
+   creating an empty one — creating it would make the next ``sync`` believe it had already run.
+4. **``export`` is parseable JSON of the whole index**, since that is the machine-readable
+   contract the human output is only a view of.
+"""
+
+import json
+import importlib.util
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+TESTS = Path(__file__).resolve().parent
+SCRIPTS = TESTS.parent
+sys.path.insert(0, str(TESTS))
+import _hermetic  # noqa: E402,F401 -- tripwire: the suite must never open the real database
+sys.path.insert(0, str(SCRIPTS))
+
+import tcut_db as db  # noqa: E402
+
+STATS_PY = str(SCRIPTS / "tcut-stats.py")
+
+
+def load_stats():
+    """Import ``tcut-stats.py`` by path — a hyphenated name has no module name."""
+    spec = importlib.util.spec_from_file_location("tcut_stats_for_tests", STATS_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+stats = load_stats()
+
+
+def clean_env(**extra):
+    """The ambient environment minus every TCUT_* switch, so output is input-determined."""
+    hidden = set(db.ENV_NAMES.values()) | {"TCUT_CONFIG"}
+    base = {k: v for k, v in os.environ.items() if k not in hidden}
+    base.update(extra)
+    return base
+
+
+class RenderingTest(unittest.TestCase):
+    """The two pure functions behind every table — no subprocess, no database."""
+
+    def test_none_renders_as_a_dash_not_the_word_none(self):
+        self.assertEqual(stats._cell(None), "-")
+
+    def test_a_newline_becomes_a_space_so_a_row_stays_one_line(self):
+        self.assertEqual(stats._cell("a\nb"), "a b")
+
+    def test_the_cap_truncates_with_an_ellipsis_and_keeps_the_width(self):
+        out = stats._cell("abcdefghij", cap=5)
+        self.assertEqual(len(out), 5, "the cap is a width, not a suggestion")
+        self.assertTrue(out.endswith("…"), "a silently shortened value reads as the whole value")
+        self.assertEqual(stats._cell("abc", cap=5), "abc", "a short value is untouched")
+
+    def test_an_empty_result_says_what_to_do(self):
+        self.assertIn("tcut sync", stats.table_or(("a",), []))
+
+    def test_a_non_empty_result_is_a_header_rule_and_rows(self):
+        out = stats.table_or(("a", "b"), [("1", "2")], )
+        lines = out.splitlines()
+        self.assertEqual(lines[0].split(), ["a", "b"])
+        self.assertRegex(lines[1], r"^-+(\s+-+)*$")
+        self.assertEqual(lines[2].split(), ["1", "2"])
+
+    def test_readonly_excludes_exactly_backup_and_restore(self):
+        """The set drives whether a command opens the file writable; a mistake is a
+        command that can change the database it was only asked to report on."""
+        self.assertEqual(set(stats.COMMANDS) - stats.READONLY, {"backup", "restore"})
+
+
+class CliBase(unittest.TestCase):
+    """A throwaway database with one of everything, and a child to run commands against it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.db_path = self.dir / "usage.db"
+        conn = db.open_db(self.db_path)
+        db.ensure_schema(conn)
+        conn.executescript(
+            "INSERT INTO sessions(session_id, project_key, project, day, agent, intent,"
+            " outcome, turns, toolcalls, first_ts, last_ts)"
+            " VALUES('abc123def456','-p--p2-a','/home/shade/P','20260304','builder',"
+            " 'wire the timer','done',3,7,1700000000000,1700000600000);"
+            " INSERT INTO session_actions(session_id, idx, text) VALUES('abc123def456',0,'did a thing');"
+            " INSERT INTO session_learned(session_id, idx, text) VALUES('abc123def456',0,'learnt a thing');"
+            " INSERT INTO topics(session_id, ts, project_key, summary)"
+            " VALUES('abc123def456',1700000100000,'-p--p2-a','a topic');"
+            " INSERT INTO prompts(workspace, idx, text) VALUES('ws1',0,'a prompt');"
+            " INSERT INTO workspaces(workspace, folder) VALUES('ws1','/home/shade/P');"
+            " INSERT INTO agents(name, kind, description) VALUES('builder','custom','builds');"
+            " INSERT INTO models(account, group_name, name, provider,"
+            " consumption_rate, context_window) VALUES"
+            " ('acct-A','builder','Model X','acme',0.39,184000),"
+            " ('acct-A','solo_agent','Model X','acme',0.39,184000);"
+            " INSERT INTO session_models(session_id, account, agent_label, model_id, mode)"
+            " VALUES('abc123def456','acct-A','agent','agent_1__Model X_null',0);"
+            " INSERT INTO credit_events(source, ts, kind, remaining, generation) VALUES"
+            "  ('/x/logs/20261001T100000/window1/renderer.log',1700000000000,'balance',154.0244,0),"
+            "  ('/x/logs/20261001T100000/window1/renderer.log',1700000100000,'balance',100,0),"
+            "  ('/x/logs/20261002T100000/window1/renderer.log',1700000200000,'skipped',NULL,NULL);"
+            " INSERT INTO inventory(kind, name, owner_plugin, version, path, source)"
+            " VALUES('skill','my-skill','',NULL,'/x/my-skill','user');"
+            " INSERT INTO memory(scope, idx, text) VALUES('user_profile',0,'likes tabs');"
+        )
+        conn.commit()
+        conn.close()
+
+    def run_cli(self, *args, env=None, expect_db=True):
+        argv = [sys.executable, STATS_PY]
+        if expect_db:
+            argv += ["--db", str(self.db_path)]
+        argv += [str(a) for a in args]
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              env=env if env is not None else clean_env())
+        return proc.returncode, proc.stdout + proc.stderr
+
+
+class CommandTest(CliBase):
+    def test_stats_prints_the_overview(self):
+        rc, out = self.run_cli("stats")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("sessions   1", out)
+        self.assertIn("projects 1", out)
+
+    def test_sessions_lists_the_session(self):
+        rc, out = self.run_cli("sessions")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("abc123def456"[:12], out)
+        self.assertIn("wire the timer", out)
+
+    def test_projects_lists_the_real_folder(self):
+        rc, out = self.run_cli("projects")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("/home/shade/P", out)
+
+    def test_prompts_are_grouped_by_the_real_folder(self):
+        rc, out = self.run_cli("prompts")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("a prompt", out)
+        self.assertIn("/home/shade/P", out,
+                      "the prompt was labelled with the workspace id, not its folder")
+
+    def test_agents_and_models(self):
+        rc, out = self.run_cli("agents")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("builder", out)
+        rc, out = self.run_cli("models")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Model X", out)
+        # Two catalog rows share the name and differ only by group. A listing that
+        # keys on the name shows one of them and still looks like a full sync.
+        self.assertEqual(out.count("Model X"), 2, "a catalog row was collapsed away")
+        self.assertIn("acct-A", out)
+        self.assertIn("0.39", out)
+
+    def test_every_command_runs_and_prints_its_shape(self):
+        """The sweep that `format`'s pre-sync failure should have been caught by.
+
+        A command that exits non-zero, or prints an empty table instead of its
+        headers, is worse than one that is missing — and per-command tests are the
+        ones that forget to exist when a command is added. `backup`/`restore` are
+        excluded: they write, and their own cases cover them.
+        """
+        for cmd in sorted(set(stats.COMMANDS) - {"backup", "restore", "show"}):
+            with self.subTest(cmd=cmd):
+                rc, out = self.run_cli(cmd)
+                self.assertEqual(rc, 0, out)
+                self.assertTrue(out.strip(), f"`tcut {cmd}` printed nothing")
+        rc, out = self.run_cli("show", "abc123def456")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("session abc123def456", out)
+
+    def test_skills_plugins_mcp_and_inventory(self):
+        for cmd in ("skills", "plugins", "mcp", "inventory"):
+            with self.subTest(cmd=cmd):
+                rc, out = self.run_cli(cmd)
+                self.assertEqual(rc, 0, out)
+        rc, out = self.run_cli("skills")
+        self.assertIn("my-skill", out)
+
+    def test_memory_lists_paragraphs(self):
+        rc, out = self.run_cli("memory")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("likes tabs", out)
+
+    def test_show_prints_one_session_and_its_lists(self):
+        rc, out = self.run_cli("show", "abc123def456")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("did a thing", out)
+        self.assertIn("learnt a thing", out)
+        self.assertIn("a topic", out)
+
+    def test_the_model_rides_the_session_row_and_the_detail(self):
+        rc, out = self.run_cli("sessions")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("agent_1__Model X_null", out)
+        rc, out = self.run_cli("show", "abc123def456")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("model     agent: agent_1__Model X_null", out)
+
+    def test_credits_lists_the_series_and_names_the_bound(self):
+        rc, out = self.run_cli("credits")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("spent >=", out)
+        self.assertIn("154.0244", out, "the older balance is the one that fell")
+        self.assertIn("54.0244", out, "the fall between two balances is not derived")
+        self.assertIn("lower bound", out)
+        self.assertIn("no token counts", out)
+        self.assertIn("2 observations", out)
+        self.assertIn("1 fetch skipped", out, "a count of one must not read as plural")
+        rows = [line for line in out.splitlines() if re.match(r"\d{4}-\d{2}-\d{2}", line)]
+        self.assertEqual(len(rows), 2,
+                         "the numberless skipped event joined the balance series")
+
+    def test_credits_says_so_when_there_are_no_observations(self):
+        empty = self.dir / "no-credits.db"
+        conn = db.open_db(empty)
+        db.ensure_schema(conn)
+        conn.close()
+        rc, out = self.run_cli("--db", str(empty), "credits", expect_db=False)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("no credit balance observations", out)
+
+    def test_show_unknown_session_fails_with_a_message(self):
+        rc, out = self.run_cli("show", "nope")
+        self.assertEqual(rc, 1)
+        self.assertIn("no such session", out)
+
+    def test_recent_and_export(self):
+        rc, out = self.run_cli("recent")
+        self.assertEqual(rc, 0, out)
+        rc, out = self.run_cli("export")
+        self.assertEqual(rc, 0, out)
+        data = json.loads(out)
+        self.assertEqual(data["overview"]["sessions"], 1)
+        self.assertEqual(len(data["sessions"]), 1)
+        self.assertIn("inventory", data)
+
+    def test_format_prints_the_format_doc(self):
+        rc, out = self.run_cli("format")
+        # A guard that accepts rc 0 or 1 cannot fail, so it cannot catch a `format`
+        # that stopped printing the doc. Name the markers the doc must contain.
+        self.assertEqual(rc, 0, out)
+        self.assertIn("# Trae CN format notes", out)
+        self.assertIn("state.vscdb", out)
+
+    def test_format_needs_no_database(self):
+        """`format` explains the sources; requiring an index made it unusable pre-sync."""
+        missing = self.dir / "never-synced.db"
+        self.assertFalse(missing.exists())
+        rc, out = self.run_cli("--db", str(missing), "format", expect_db=False)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("# Trae CN format notes", out)
+        self.assertFalse(missing.exists(), "`format` created the database it should not need")
+
+
+class NoDefaultSubcommandTest(CliBase):
+    def test_bare_invocation_is_stats(self):
+        """No subcommand must not be a usage error: it is the common case."""
+        proc = subprocess.run(
+            [sys.executable, STATS_PY, "--db", str(self.db_path)],
+            capture_output=True, text=True, env=clean_env())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("sessions", proc.stdout + proc.stderr)
+
+
+class DbFlagPlacementTest(CliBase):
+    def test_db_before_the_subcommand(self):
+        proc = subprocess.run(
+            [sys.executable, STATS_PY, "--db", str(self.db_path), "health"],
+            capture_output=True, text=True, env=clean_env())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn(str(self.db_path), proc.stdout,
+                      "a --db before the subcommand was dropped")
+
+    def test_db_after_the_subcommand(self):
+        proc = subprocess.run(
+            [sys.executable, STATS_PY, "health", "--db", str(self.db_path)],
+            capture_output=True, text=True, env=clean_env())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn(str(self.db_path), proc.stdout)
+
+
+class ReadonlyMissingDbTest(CliBase):
+    def test_a_read_command_refuses_to_run_without_a_database(self):
+        """It must not create an empty one — that would mask a missing sync."""
+        missing = self.dir / "absent" / "usage.db"
+        proc = subprocess.run(
+            [sys.executable, STATS_PY, "--db", str(missing), "stats"],
+            capture_output=True, text=True, env=clean_env())
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("tcut sync", proc.stdout + proc.stderr)
+        self.assertFalse(missing.exists(), "a read-only command created the database")
+
+
+class HealthTest(CliBase):
+    def test_health_names_the_sources_and_the_database(self):
+        rc, out = self.run_cli("health")
+        self.assertEqual(rc, 0, out)
+        self.assertIn(str(self.db_path), out)
+        self.assertIn("sources", out)
+        self.assertIn("unparsed   none", out)
+
+    def test_health_counts_unparsed_records_when_there_are_any(self):
+        conn = db.open_db(self.db_path)
+        db.note_unparsed(conn, "session_memory:not_json", 4)
+        conn.commit()
+        conn.close()
+        rc, out = self.run_cli("health")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("session_memory:not_json", out)
+        self.assertIn("4", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
