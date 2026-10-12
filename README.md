@@ -143,7 +143,7 @@ The suite uses stdlib `unittest` and Textual's `run_test()` harness. It builds t
 fixtures, never opens the real usage database, and checks import/privacy guards, incremental parsing,
 snapshots, CLI output, TUI interactions, and content-storage boundaries.
 
-Latest local run: `Ran 215 tests ... OK`.
+Latest local run: `Ran 220 tests ... OK`.
 
 ## Maintenance notes
 

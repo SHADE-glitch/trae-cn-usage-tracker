@@ -128,7 +128,7 @@ SQLite**。设置 `store_content = false` 后保留元数据并删除全部这�
 当前测试套件使用标准库 `unittest` 与 Textual 的 `run_test()`。测试构造临时 Trae fixture，从不打开真实
 usage database，并覆盖 import/privacy 守卫、增量解析、快照、CLI 输出、TUI 交互和内容存储边界。
 
-最近一次本地运行：`Ran 215 tests ... OK`。
+最近一次本地运行：`Ran 220 tests ... OK`。
 
 ## 维护说明
 
