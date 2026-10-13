@@ -14,7 +14,7 @@ A passive, local usage tracker for **Trae CN**. It reads the plaintext files Tra
 `~/.trae-cn` and `~/.config/Trae CN`, indexes them into one SQLite database, and presents the result
 through a Textual TUI or a dependency-free CLI.
 
-## What is recorded, and what is not
+## 📝 What is recorded, and what is not
 
 Trae CN keeps its per-tool-call agent store encrypted, so this tracker records the highest-fidelity
 plaintext that exists: sessions, summaries, topic lines, prompts, memory paragraphs, snapshot
@@ -29,7 +29,7 @@ the usage endpoints appear in `main.log` as URL plus status code with no respons
 position therefore renders `-`; tool **names** are not invented either. The evidence is in
 [`docs/maintenance/trae-cn-format.md`](docs/maintenance/trae-cn-format.md).
 
-## Install
+## 🚀 Install
 
 ```sh
 ./install.sh
@@ -38,7 +38,7 @@ position therefore renders `-`; tool **names** are not invented either. The evid
 This creates a local Python environment for the TUI and installs `tcut` at `~/.local/bin/tcut`. The
 headless commands use only the Python 3.11+ standard library; the TUI requires `textual>=8.2,<9`.
 
-## Commands
+## 🧰 Commands
 
 ```sh
 tcut                         # open the five-tab TUI
@@ -72,7 +72,7 @@ tcut stats --db /tmp/tcut.db
 
 The default database is `~/.local/share/trae-cn-usage-tracker/usage.db`.
 
-## TUI tabs
+## 📊 TUI tabs
 
 Dashboard · Skills · Agents · Plugins · MCP
 
@@ -104,7 +104,7 @@ at all, and every session in the current week is one of them), or `none dated in
 placed nothing). Widening the picker only helps with the last one. The credit balance Trae does log
 lives in the Dashboard's `Credits · sync` panel.
 
-## Storage and privacy
+## 🔒 Storage and privacy
 
 The index is local SQLite. Nothing is uploaded and the production scripts import no network or
 process-spawning module. Trae's own directories are read-only inputs.
@@ -120,7 +120,7 @@ window) and each session's selected model are stored regardless of `store_conten
 not prose. A custom-provider catalog entry also carries `ak`, `sk`, `base_url` and `custom_config` —
 the indexer reads a whitelist and those fields never reach the database.
 
-## Settings
+## ⚙️ Settings
 
 Settings file: `~/.config/tcut/config.toml` (override with `TCUT_CONFIG`). Environment variables take
 precedence over the file.
@@ -137,7 +137,7 @@ precedence over the file.
 
 `tcut health` reports the values actually in effect.
 
-## Tests
+## 🧪 Tests
 
 The suite uses stdlib `unittest` and Textual's `run_test()` harness. It builds throwaway Trae-shaped
 fixtures, never opens the real usage database, and checks import/privacy guards, incremental parsing,
@@ -145,13 +145,13 @@ snapshots, CLI output, TUI interactions, and content-storage boundaries.
 
 Latest local run: `Ran 220 tests ... OK`.
 
-## Maintenance notes
+## 🧭 Maintenance notes
 
 See [`docs/maintenance/`](docs/maintenance/README.md): the format note records what is observed, what
 is encrypted, and what the indexer intentionally does not claim; the compatibility matrix states what
 is supported; the measurement note carries the baseline. The parser's format surface is generated —
 `tcut format` prints it, `tcut format --write` refreshes the block.
 
-## License
+## 📄 License
 
 MIT. Copyright (c) 2026 SHADE-glitch.
