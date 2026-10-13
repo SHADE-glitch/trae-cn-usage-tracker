@@ -121,15 +121,21 @@ class TuiBase(unittest.TestCase):
 
 
 class StructureTest(TuiBase):
-    def test_the_five_tabs_are_present_and_in_order(self):
+    def test_the_eight_tabs_are_present_and_in_order(self):
         async def go():
             app = self.app()
             async with app.run_test(size=(120, 40)) as pilot:
                 tc = app.query_one(TabbedContent)
-                return [pane.id for pane in tc.query(TabPane)]
-        ids = run(go())
+                panes = list(tc.query(TabPane))
+                # TabPane carries no label in this release; the tab bar does.
+                return [pane.id for pane in panes], [tc.get_tab(pane.id).label_text
+                                                    for pane in panes]
+        ids, labels = run(go())
         self.assertEqual(ids, tui.TrackerApp.TAB_IDS)
-        self.assertEqual(len(ids), 5)
+        self.assertEqual(len(ids), 8)
+        # cbut's tab set is the navigation contract: same labels, same order.
+        self.assertEqual(labels, ["Dashboard", "Tools", "Skills", "Agents",
+                                   "Plugins", "MCP", "Tokens", "Usage"])
 
     def test_every_wide_table_renders_exactly_its_columns(self):
         async def go():
@@ -203,7 +209,8 @@ class StructureTest(TuiBase):
                     seen[pane_id] = app._range_of(pane_id) is not None
                 return seen
         seen = run(go())
-        windowed = {"tab-dashboard", "tab-agents"}
+        windowed = {"tab-dashboard", "tab-tools", "tab-agents", "tab-tokens",
+                   "tab-usage"}
         for pane, has in seen.items():
             with self.subTest(pane=pane):
                 self.assertEqual(has, pane in windowed,
@@ -273,7 +280,7 @@ class InteractionTest(TuiBase):
         self.assertIn("model · agent", text)
         self.assertIn("agent_1__Model X_null", text)
 
-    def test_tab_binding_cycles_through_all_five(self):
+    def test_tab_binding_cycles_through_all_eight(self):
         async def go():
             app = self.app()
             async with app.run_test(size=(120, 40)) as pilot:

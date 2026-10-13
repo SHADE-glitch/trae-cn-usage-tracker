@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """tcut-tui — interactive viewer for the Trae CN usage tracker.
 
-Tabs: Dashboard · Skills · Agents · Plugins · MCP.
+Tabs: Dashboard · Tools · Skills · Agents · Plugins · MCP · Tokens · Usage.
 
-The tab set is cbut's, minus Tools, Tokens and Usage. Those three cannot be fed
-from Trae CN's disk: snapshot tags carry toolcall ids but never a tool name, the
-agent store is encrypted so no token count exists to read, and there is no
-per-request record. docs/maintenance/trae-cn-format.md holds the measurements.
-The session-level tables cbut has no room for were dropped on the same rule;
-their rows stay indexed and reach the terminal through ``tcut sessions``,
-``tcut projects``, ``tcut prompts`` and ``tcut memory``, and the credit balance
-Trae does log sits in the Dashboard's Credits · sync panel.
+The tab set matches cbut's eight. Three of them cannot be fed with what the
+other feeds them with, and each says so on its own tab rather than being left
+out or shown as a fake zero:
+
+- **Tools** counts tool calls per session. Trae writes a call as a snapshot git
+  tag (``toolcall-<messageId>-<toolcallId>``) and names the tool nowhere
+  readable, so this is a count, never a per-tool ranking.
+- **Tokens** holds credit balances. Trae logs no token count in plaintext — the
+  agent store is encrypted — so the slot aligned with cbut's Tokens tab carries
+  the one currency the log does write.
+- **Usage** is per **session**, not per request: there is no per-request record
+  on disk. The summary panels are session totals over the tab's own window and
+  the list below them is that window's sessions, newest first.
+
+The session-level tables cbut has no room for (Sessions, Projects, Prompts,
+Memory) stay out of the tab set on the same rule; their rows remain indexed and
+reach the terminal through ``tcut sessions``, ``tcut projects``,
+``tcut prompts`` and ``tcut memory``.
 
 Requires ``textual`` (see requirements.txt). The headless reports in
 tcut-stats.py need no third-party packages; this file is the only place that
@@ -77,6 +87,20 @@ def local_time(ms):
     return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _leader(rows, name_key, empty):
+    """A panel line for a windowed leaderboard's top row: name plus its count.
+
+    These queries filter in SQL, so an empty result means the window placed no
+    session carrying that label — not that none exists. The sentence says which,
+    because the two have different fixes and only the first belongs to the range
+    picker.
+    """
+    if not rows:
+        return empty
+    r = rows[0]
+    return f"{clip(r[name_key], 16)} ({db.count_n(r['sessions'], 's')})"
+
+
 # Range option list (values mirror tcut_db so the two stay in sync).
 # Windows are whole local calendar days ending now ("Today", "2 days", …).
 # "Custom…" is the escape hatch to the date picker; it is never stored as a
@@ -98,6 +122,20 @@ AGENTS_COLUMNS = ("agent", "kind", "sessions")
 SKILLS_COLUMNS = ("skill", "source", "owner", "path")
 PLUGINS_COLUMNS = ("plugin", "version", "source", "path")
 MCP_COLUMNS = ("server", "source", "path")
+# Tools: a per-session call count, not a per-tool ranking — Trae writes a call
+# as a snapshot git tag and never names the tool. The session is the row key, so
+# a row opens that session's own detail rather than a tool that does not exist.
+TOOLS_COLUMNS = ("session", "project", "calls", "messages", "first seen",
+                 "last seen")
+# Tokens: the credit-balance series. This tab is aligned with cbut's Tokens slot,
+# not with its data — cbut counts tokens per model, Trae writes no token count
+# in plaintext at all, and the balance is the only currency the log records.
+# `spent>=` is a query-time lower bound between two samples, never a measurement.
+TOKENS_COLUMNS = ("time", "remaining", "spent≥", "generation", "source")
+# Usage: the window's sessions. Same shape cbut's request log has, one row per
+# session instead of per request, so it is the same query with a different
+# subject — `q_sessions` with a limit rather than a window-scoped ledger.
+USAGE_LOG_COLUMNS = ("when", "session", "project", "turns", "calls", "model")
 # The sessions behind one entity. The subject is in the screen title, so it is not
 # repeated in every row; the columns are the ones that read differently per session.
 ENTITY_COLUMNS = ("when", "session", "turns", "calls", "model", "intent")
@@ -109,10 +147,12 @@ ENTITY_LABELS = {"project": "Project", "agent": "Agent", "model": "Model"}
 if HAVE_TEXTUAL:
 
     class TopBar(Horizontal):
-        """标题栏 + 共享时间范围选择器（取代 textual 的 Header）。
+        """Title bar + the shared time-range selector, replacing textual's Header.
 
-        去掉两个内置行为：点击不再切换 'tall' 高度；没有左上角图标，不会打开命令面板。
-        只有主界面带选择器；详情屏用 with_range=False。
+        Two built-in behaviours are dropped: clicking no longer toggles the
+        'tall' height, and there is no app icon, so no ctrl+p command palette.
+        Only the main screen carries the selector; detail screens pass
+        ``with_range=False``.
         """
         DEFAULT_CSS = """
         TopBar { dock: top; width: 100%; height: 1; background: $panel; color: $foreground; }
@@ -1051,9 +1091,14 @@ if HAVE_TEXTUAL:
         .sess-value { width: 1fr; }
         .sess-heading { padding: 1 0 0 0; color: $accent; }
         .sess-item { width: 1fr; }
-        /* The Dashboard is a stack of .dash-row rows; #dash-box scrolls. Each row
+        /* Summary pages (Dashboard + Usage). Both share .usage-panel /
+           .panel-title. The Usage page has one .summary-panels row (height
+           capped, scrolls internally so its table below keeps its rows). The
+           Dashboard is a stack of .dash-row rows; #dash-box scrolls. Each row
            is a Horizontal; .compact makes it two-up, .compact.stacked stacks it. */
         #dash-box { height: 1fr; padding: 0 1; overflow-y: auto; }
+        #usage-box { height: 1fr; padding: 0 1; }
+        .summary-panels { height: auto; max-height: 40%; overflow-y: auto; }
         .usage-panel {
             border: round $primary;
             padding: 0 1;
@@ -1062,9 +1107,26 @@ if HAVE_TEXTUAL:
             height: auto;
         }
         #panel-dash-inventory, #panel-dash-activity,
-        #panel-dash-projects, #panel-dash-agents { margin: 0; }
+        #panel-dash-projects, #panel-dash-agents,
+        #panel-usage-top, #panel-usage-runtime { margin: 0; }
         .panel-title { text-style: bold; color: $accent; }
-        #dash-note { padding: 0 1; color: $text-muted; }
+        #usage-window, #usage-status { padding: 0; }
+        #dash-note, #usage-note { padding: 0 1; color: $text-muted; }
+        /* The Usage page's table gets a floor of rows: the panels above it are
+           capped and scroll, so without this the log can be squeezed to nothing
+           on a short terminal. */
+        #t-usage { height: 1fr; min-height: 6; }
+        .summary-panels.compact, .dash-row.compact { layout: vertical; }
+        /* Stacked one-per-row wastes the width a narrow terminal still has: at
+           80x24 four stacked panels push the table's rows off the visible area.
+           Two columns keep a 24-char panel line plus its border and padding
+           (~28 cells) legible and leave the table room. */
+        .summary-panels.compact { layout: grid; grid-size: 2; }
+        /* Below two cells' minimum, stacking is the only layout that does not
+           wrap a panel line mid-value. */
+        .summary-panels.compact.stacked { layout: vertical; }
+        .summary-panels.compact .usage-panel,
+        .dash-row.compact .usage-panel { width: 100%; margin: 0 0 1 0; }
         /* One line per wide table, only when columns were dropped — an always-on
            note above a table that hides nothing is noise that costs a row. Auto
            height because a note that is itself cut off at the right edge would be
@@ -1081,8 +1143,11 @@ if HAVE_TEXTUAL:
         .dash-row { height: auto; margin: 0 0 1 0; }
         """
         # Pane ids in display order. Used for wrap-around tab cycling.
+        # Same eight slots, same order and same labels as cbut's tab set, so a
+        # reader who knows one knows the other's navigation.
         TAB_IDS = [
-            "tab-dashboard", "tab-skills", "tab-agents", "tab-plugins", "tab-mcp",
+            "tab-dashboard", "tab-tools", "tab-skills", "tab-agents",
+            "tab-plugins", "tab-mcp", "tab-tokens", "tab-usage",
         ]
         # The tab shown on launch. The TopBar Select must start on this tab's
         # own range (see compose), or its mount-time Changed would overwrite
@@ -1100,6 +1165,7 @@ if HAVE_TEXTUAL:
         ENABLE_COMMAND_PALETTE = False
 
         DASH_TOP = 5            # rows in the Dashboard's Top projects / Top agents
+        USAGE_LOG_LIMIT = 100      # rows in the Usage page's session list
         DETAIL_LIMIT = 200      # items on a session's action / learned / topic lists
 
         def __init__(self, db_path, clock=None, config=None):
@@ -1111,6 +1177,7 @@ if HAVE_TEXTUAL:
             # turns into a message rather than a traceback.
             self.config = dict(db.DEFAULTS) if config is None else dict(config)
             self.DASH_TOP = self.config["top_n"]
+            self.USAGE_LOG_LIMIT = self.config["log_limit"]
             self.DETAIL_LIMIT = self.config["detail_limit"]  # session detail lists
             # Shadows WideTableMixin.NAME_CAP for this host and every screen pushed
             # on top of it; the property ``name_cap`` is what reads it.
@@ -1126,12 +1193,13 @@ if HAVE_TEXTUAL:
             self._sync_pending = False
             self.sync_mod = None
             # Per-tab range state: each tab keeps its own window, so changing one
-            # tab's range never moves another's. The Dashboard and the Agents tab
-            # count sessions, so they have a window; the three inventory tabs have
-            # no timestamp of their own, so they are all-time and their range
-            # selector is hidden.
+            # tab's range never moves another's. Dashboard and Usage summarise a
+            # window; Tools, Agents and Tokens have timestamps of their own. The
+            # three inventory tabs (Skills / Plugins / MCP) carry no timestamp, so
+            # they are all-time and their range selector is hidden.
             self.tab_range = {
-                "tab-dashboard": "7d", "tab-agents": "7d",
+                "tab-dashboard": "7d", "tab-tools": "7d", "tab-agents": "7d",
+                "tab-tokens": "7d", "tab-usage": "7d",
             }
             self._data_ready = False
             # table id -> (rows, empty message, key index, key kind, key rows)
@@ -1224,6 +1292,9 @@ if HAVE_TEXTUAL:
                         Static(id="dash-note"),
                         id="dash-box",
                     )
+                with TabPane("Tools", id="tab-tools"):
+                    yield Static(id="colnote-tools", classes="col-note")
+                    yield DataTable(id="t-tools", zebra_stripes=True)
                 with TabPane("Skills", id="tab-skills"):
                     yield Static(id="colnote-skills", classes="col-note")
                     yield DataTable(id="t-skills", zebra_stripes=True)
@@ -1236,6 +1307,47 @@ if HAVE_TEXTUAL:
                 with TabPane("MCP", id="tab-mcp"):
                     yield Static(id="colnote-mcp", classes="col-note")
                     yield DataTable(id="t-mcp", zebra_stripes=True)
+                with TabPane("Tokens", id="tab-tokens"):
+                    yield Static(id="colnote-tokens", classes="col-note")
+                    yield DataTable(id="t-tokens", zebra_stripes=True)
+                with TabPane("Usage", id="tab-usage"):
+                    yield Vertical(
+                        Horizontal(
+                            Vertical(
+                                Static("Window / Sessions", classes="panel-title"),
+                                Static(id="usage-window"),
+                                Static(id="sum-sessions"),
+                                Static(id="sum-projects"),
+                                classes="usage-panel", id="panel-usage-window",
+                            ),
+                            Vertical(
+                                Static("Activity", classes="panel-title"),
+                                Static(id="sum-turns"),
+                                Static(id="sum-calls"),
+                                Static(id="sum-dated"),
+                                classes="usage-panel", id="panel-usage-activity",
+                            ),
+                            Vertical(
+                                Static("Top in window", classes="panel-title"),
+                                Static(id="sum-top-project"),
+                                Static(id="sum-top-agent"),
+                                Static(id="sum-top-model"),
+                                classes="usage-panel", id="panel-usage-top",
+                            ),
+                            Vertical(
+                                Static("Credits · sync", classes="panel-title"),
+                                Static(id="sum-credits"),
+                                Static(id="sum-credits-spent"),
+                                Static(id="usage-status"),
+                                classes="usage-panel", id="panel-usage-runtime",
+                            ),
+                            id="usage-panels", classes="summary-panels",
+                        ),
+                        Static(id="usage-note"),
+                        Static(id="colnote-usage", classes="col-note"),
+                        DataTable(id="t-usage", zebra_stripes=True),
+                        id="usage-box",
+                    )
             yield Static("", id="status")
             yield Footer()
 
@@ -1290,6 +1402,45 @@ if HAVE_TEXTUAL:
 
 
 
+        def _fill_tools(self, conn, start=None, end=None) -> None:
+            """Tool calls per session — a count, because Trae writes no tool name.
+
+            Trae records a call as a snapshot git tag
+            (``toolcall-<messageId>-<toolcallId>``); the tool itself is named
+            nowhere readable, so a per-tool ranking would be a fabrication. The
+            row key is the session, so a row opens that session's detail.
+            """
+            rows = [[
+                r["session_id"],
+                r["project"] or r["project_key"] or "-",
+                # COUNT(*) over an existing row group: 0 is not reachable here, so
+                # these print as numbers and no `-` case has to be invented.
+                f"{r['calls']:,}", f"{r['messages']:,}",
+                ts(r["first_ts"]), ts(r["last_ts"]),
+            ] for r in db.q_toolcall_sessions(conn, start_ts=start, end_ts=end)]
+            self._fill_wide("t-tools", rows, "No tool calls in this window",
+                            key_kind="session")
+
+        def _fill_tokens(self, conn, start=None, end=None) -> None:
+            """Credit balances over the window — the slot cbut fills with tokens.
+
+            Trae logs no token count in plaintext (the agent store is
+            encrypted), so this tab holds the one currency the credit log does
+            record. ``spent≥`` is a lower bound derived between two samples,
+            never a measured consumption, and the `≥` is on the column so the
+            table cannot be quoted without it.
+            """
+            rows = [[
+                local_time(r["ts"]),
+                db.credit_num(r["remaining"]),
+                db.credit_num(r["spent_at_least"]),
+                r["generation"] if r["generation"] is not None else "-",
+                db.credit_log_label(r["source"]),
+            ] for r in db.q_credits(conn, start_ts=start, end_ts=end)]
+            self._fill_wide("t-tokens", rows,
+                            "No credit balance recorded in this window",
+                            key_index=1, key_kind="credit")
+
         def _fill_agents(self, conn, start=None, end=None) -> None:
             rows = [[r["agent"], r["kind"] or "-",
                      db.window_count(r["sessions"], r["undated"])]
@@ -1331,11 +1482,12 @@ if HAVE_TEXTUAL:
                 table_id, rows, empty_msg, key_index=(0, 1), key_kind="inv",
                 key_rows=[[r["name"], r["owner_plugin"]] for r in found])
 
-        # pane id -> the fill method for that tab (dashboard handled separately).
+        # pane id -> the fill method for that tab (usage handled separately).
         _PANE_FILL = {
-            "tab-dashboard": "_fill_dashboard",
+            "tab-dashboard": "_fill_dashboard", "tab-tools": "_fill_tools",
             "tab-skills": "_fill_skills", "tab-agents": "_fill_agents",
             "tab-plugins": "_fill_plugins", "tab-mcp": "_fill_mcp",
+            "tab-tokens": "_fill_tokens", "tab-usage": "_fill_usage",
         }
 
         def refresh_data(self, conn=None) -> None:
@@ -1359,10 +1511,13 @@ if HAVE_TEXTUAL:
                 # Plugins / MCP) are all-time — they carry no timestamp of their
                 # own, so their range selector is hidden.
                 self._fill_dashboard(conn, *self._bounds_for("tab-dashboard"))
+                self._fill_tools(conn, *self._bounds_for("tab-tools"))
                 self._fill_skills(conn)
                 self._fill_agents(conn, *self._bounds_for("tab-agents"))
                 self._fill_plugins(conn)
                 self._fill_mcp(conn)
+                self._fill_tokens(conn, *self._bounds_for("tab-tokens"))
+                self._fill_usage(conn, *self._bounds_for("tab-usage"))
                 o = db.overview(conn)          # status bar stays all-time
             except sqlite3.Error as exc:
                 # This runs during on_mount: letting it raise kills the app
@@ -1485,10 +1640,13 @@ if HAVE_TEXTUAL:
         # every column and shows no note, so registering one that does not need
         # the plan costs nothing.
         WIDE_TABLES = {
+            "t-tools": (TOOLS_COLUMNS, "colnote-tools", 2),
             "t-skills": (SKILLS_COLUMNS, "colnote-skills", 2),
             "t-agents": (AGENTS_COLUMNS, "colnote-agents", 2),
             "t-plugins": (PLUGINS_COLUMNS, "colnote-plugins", 2),
             "t-mcp": (MCP_COLUMNS, "colnote-mcp", 2),
+            "t-tokens": (TOKENS_COLUMNS, "colnote-tokens", 2),
+            "t-usage": (USAGE_LOG_COLUMNS, "colnote-usage", 4),
         }
 
         def _apply_responsive_layout(self, width=None) -> None:
@@ -1499,9 +1657,10 @@ if HAVE_TEXTUAL:
             try:
                 compact = width < self.COMPACT_WIDTH
                 stacked = width < self.STACKED_WIDTH
-                for el in self.query(".dash-row"):
-                    el.set_class(compact, "compact")
-                    el.set_class(stacked, "stacked")
+                for selector in (".summary-panels", ".dash-row"):
+                    for el in self.query(selector):
+                        el.set_class(compact, "compact")
+                        el.set_class(stacked, "stacked")
             except Exception:
                 pass
 
@@ -1570,6 +1729,125 @@ if HAVE_TEXTUAL:
                 self.query_one("#topbar", TopBar).set_range_label(text)
             except Exception:
                 pass
+
+        # --- Usage page ------------------------------------------------------------
+
+        def _render_usage_window(self) -> None:
+            """Name the window the Usage page is summarising, in its own words.
+
+            Same two lines as cbut's Usage page: the label plus the concrete
+            span, so "Last 7 days" and a custom range both say which seconds
+            they cover. Under All time there is no span to print.
+            """
+            try:
+                wid = self.query_one("#usage-window", Static)
+            except Exception:
+                return
+            rng = self._range_of("tab-usage")
+            label = db.window_label(rng) if rng is not None else "all time"
+            start, end = self._bounds_for("tab-usage")
+            if start is None or end is None:
+                wid.update(label)
+                return
+            start_date = datetime.fromtimestamp(start / 1000).strftime("%Y-%m-%d")
+            end_date = datetime.fromtimestamp(end / 1000).strftime("%Y-%m-%d")
+            span = (start_date if start_date == end_date
+                    else f"{start_date} — {end_date}")
+            wid.update(f"{label}\n{span}")
+
+        def _render_usage_status(self) -> None:
+            """The Runtime panel's one line: index freshness, from app state."""
+            try:
+                wid = self.query_one("#usage-status", Static)
+            except Exception:
+                return
+            wid.update("session sync not yet" if self._last_sync is None
+                       else local_time(int(self._last_sync * 1000)))
+
+        def _fill_usage(self, conn=None, start=None, end=None) -> None:
+            """The Usage page: session totals over its own window, then its sessions.
+
+            cbut's Usage page is a per-request ledger. Trae CN writes no
+            per-request record, so this page is per **session** and says so on
+            it: the panels are sums over sessions and the table below is the same
+            window's sessions. Every query takes this tab's own bounds, so the
+            page never mixes windows.
+            """
+            if not self._data_ready:
+                return
+            if start is None and end is None:
+                start, end = self._bounds_for("tab-usage")
+            self._render_usage_window()
+            self._render_usage_status()
+            own = conn is None
+            if own:
+                try:
+                    conn = db.open_db(self.db_path, readonly=True)
+                except sqlite3.Error as exc:
+                    self._report_query_error(exc)
+                    return
+            try:
+                s = db.q_usage_summary(conn, start, end)
+                credits = db.q_credits(conn, start_ts=start, end_ts=end)
+                project = db.q_top_projects(conn, 1, start, end)
+                agent = db.q_top_agents(conn, 1, start, end)
+                self._render_usage_panels(s, credits, project, agent)
+                self._fill_usage_logs(conn, start, end)
+            except sqlite3.Error as exc:
+                # e.g. an un-migrated DB where a newer column is missing.
+                self._report_query_error(exc)
+                self.query_one("#usage-note", Static).update(
+                    f"usage query failed ({exc}); run: tcut sync")
+                return
+            finally:
+                if own:
+                    conn.close()
+            self._apply_responsive_layout()
+
+        def _render_usage_panels(self, s: dict, credits, project, agent) -> None:
+            top = s.get("top_model") or {}
+            self._put_panel("#sum-sessions", "Sessions", f"{s['sessions']:,}")
+            self._put_panel("#sum-projects", "Projects",
+                            f"{s['projects']:,}")
+            self._put_panel("#sum-turns", "Turns", f"{s['turns']:,}")
+            self._put_panel("#sum-calls", "Tool calls", f"{s['toolcalls']:,}")
+            self._put_panel("#sum-dated", "Unmeasured",
+                            db.count_n(s["unmeasured"], "session"))
+            # A leaderboard whose top row is a label prints the label's own count
+            # of sessions, so "Top in window" is readable without the table below.
+            self._put_panel("#sum-top-project", "Project",
+                            _leader(project, "project_key", "no project recorded"))
+            self._put_panel("#sum-top-agent", "Agent",
+                            _leader(agent, "agent", "no agent named"))
+            self._put_panel("#sum-top-model", "Model",
+                            top.get("model_id") or "no selection recorded")
+            self._put_panel("#sum-credits", "Latest balance",
+                            db.credit_num(credits[0]["remaining"] if credits
+                                          else None))
+            self._put_panel("#sum-credits-spent", "Spent at least",
+                            db.credit_num(sum(c["spent_at_least"] or 0
+                                              for c in credits)))
+            note = (f"Per session, not per request — Trae CN records no"
+                    f" per-request line ({db.count_n(s['sessions'], 'session')}"
+                    f" in this window)")
+            if s["unmeasured"]:
+                # Same disclosure the Dashboard makes, sized to its population:
+                # the `~` on any time in the table below refers to exactly these.
+                note += (f" · {db.count_n(s['unmeasured'], 'session')} with no"
+                         f" measured time, dated from the session id (~)")
+            self.query_one("#usage-note", Static).update(note)
+
+        def _fill_usage_logs(self, conn, start, end) -> None:
+            """The window's sessions, newest first — this page's "log"."""
+            rows = [[
+                f"{db.derived_mark(r['derived_ts'])}{ts(r['shown_ts'])}",
+                r["session_id"], r["project"] or r["project_key"] or "-",
+                f"{r['turns']:,}", f"{r['toolcalls']:,}", r["model_id"] or "-",
+            ] for r in db.q_sessions(conn, limit=self.USAGE_LOG_LIMIT,
+                                     start_ts=start, end_ts=end)]
+            self._fill_wide("t-usage", rows,
+                            "No sessions in this window — widen the range above.",
+                            key_index=1, key_kind="session")
 
         # --- Dashboard page ------------------------------------------------
 
@@ -1797,6 +2075,8 @@ if HAVE_TEXTUAL:
                 return                    # programmatic sync, not a user change
             self.tab_range[pane] = event.value
             self._sync_range_widget()     # refresh the 📅 label
+            if pane == "tab-usage":
+                self._render_usage_window()   # keep the Usage Window panel live
             self._refresh_active_tab()    # re-query only the visible tab
 
         def _open_date_range(self, pane) -> None:
@@ -1809,6 +2089,8 @@ if HAVE_TEXTUAL:
                     return
                 self.tab_range[pane] = result
                 self._sync_range_widget()
+                if pane == "tab-usage":
+                    self._render_usage_window()
                 self._refresh_active_tab()
 
             self.push_screen(modal, done)
@@ -1845,11 +2127,17 @@ if HAVE_TEXTUAL:
                                               db.window_label(self._range_of(pane))))
             else:
                 self.notify(
-                    "No detail: Trae CN records no usage per "
-                    + self.NO_DETAIL_NOTE.get(kind, kind),
+                    "No detail: "
+                    + self.NO_DETAIL_NOTE.get(kind, f"usage per {kind}"),
                     severity="warning")
 
-        NO_DETAIL_NOTE = {"inv": "skill, plugin or MCP server"}
+        # Key kinds with no drill-down behind them, each with the reason in the
+        # reader's terms — an inventory row has no history, and a credit sample
+        # is a balance level rather than a per-request ledger.
+        NO_DETAIL_NOTE = {
+            "inv": "Trae CN records no usage per skill, plugin or MCP server",
+            "credit": "a credit sample is a balance level, not a request",
+        }
 
         # --- R / S shortcuts ------------------------------------------------
 

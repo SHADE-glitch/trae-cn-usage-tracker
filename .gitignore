@@ -15,8 +15,9 @@ venv/
 .env
 .env.*
 
-# One-off reports and session state. This repository is public, and these files
-# carry real paths under ~/.trae-cn plus measured data volumes — never commit.
+# One-off reports and session state. This repository is private, but the reason
+# to ignore these is the files themselves: they carry real paths under ~/.trae-cn
+# plus measured data volumes — they are working documents, never source.
 # No leading slash: `reports/` matches at any depth, including docs/reports/.
 reports/
 

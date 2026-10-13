@@ -71,7 +71,7 @@ CONFIG_PATH = Path(os.environ.get("TCUT_CONFIG") or (
 # behaviour change, and ``test_config.py`` pins each against the constant it replaces.
 DEFAULTS = {
     "top_n": 5,            # rows in the Dashboard's Top projects / Top agents
-    "log_limit": 100,      # Prompts page rows
+    "log_limit": 100,      # rows on the Usage page's session log and on `tcut prompts`
     "detail_limit": 200,   # rows on a history screen
     "name_cap": 28,        # widest cell a table renders
     "refresh_secs": 5,     # TUI redraw timer
@@ -1085,6 +1085,42 @@ def q_top_models(conn, limit=5, start_ts=None, end_ts=None):
     return conn.execute(sql, params).fetchall()
 
 
+def q_toolcall_sessions(conn, limit=None, start_ts=None, end_ts=None):
+    """Sessions that made tool calls in the window, busiest and newest first.
+
+    Trae CN records a tool call as a snapshot git tag
+    (``toolcall-<messageId>-<toolcallId>``) and nowhere else readable, so a call
+    has an id but no name, no status and no duration. This is therefore a
+    **count per session**, not a per-tool ranking: ``calls`` is the number of
+    distinct tool-call tags and ``messages`` the number of distinct message ids
+    they hang off. A caller must not present the row as a tool.
+
+    The window rides on the session's ``SESSION_TIME_S``, the same rule every
+    other session-keyed query uses, and the ordering is by the session's own
+    activity so the list reads as "recent work", not "busiest ever".
+    """
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
+    where = (" AND " + " AND ".join(c for c, _ in conds)) if conds else ""
+    sql = (
+        "SELECT e.session_id,"
+        " s.project_key, s.project,"
+        " COUNT(*) AS calls,"
+        " COUNT(DISTINCT e.message_id) AS messages,"
+        f" {SESSION_TIME_S} AS shown_ts,"
+        " CASE WHEN s.last_ts IS NULL THEN 1 ELSE 0 END AS derived_ts,"
+        " MIN(e.ts) AS first_ts, MAX(e.ts) AS last_ts"
+        "  FROM toolcall_events e JOIN sessions s ON s.session_id = e.session_id"
+        f" WHERE 1=1{where}"
+        f" GROUP BY e.session_id"
+        f" ORDER BY MAX(e.ts) DESC, calls DESC, e.session_id"
+    )
+    params = [p for _, p in conds]
+    if limit:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return conn.execute(sql, params).fetchall()
+
+
 def q_inventory(conn, kind=None):
     sql = "SELECT * FROM inventory"
     params: tuple = ()
@@ -1333,7 +1369,7 @@ def _ts_where(start_ts, end_ts):
 
 
 def _time_conds(start_ts, end_ts, col="ts"):
-    """时间谓词列表 ``(sql, param)``；两者皆 None 时为空（= 全部时间）。"""
+    """Time predicates as ``(sql, param)``; empty (all time) when both bounds are None."""
     conds = []
     if start_ts is not None:
         conds.append((f"{col} >= ?", start_ts))
@@ -1343,7 +1379,7 @@ def _time_conds(start_ts, end_ts, col="ts"):
 
 
 def _time_filter(start_ts, end_ts, col="ts"):
-    """返回 ``(where_prefix, params)``；无过滤时为 ``("", [])``。"""
+    """Returns ``(where_prefix, params)``; no filter is ``("", [])``."""
     conds = _time_conds(start_ts, end_ts, col)
     if not conds:
         return "", []
@@ -1412,6 +1448,51 @@ def q_top_projects(conn, limit=5, start_ts=None, end_ts=None):
 
 def q_top_agents(conn, limit=5, start_ts=None, end_ts=None):
     return q_agents(conn, limit=limit, start_ts=start_ts, end_ts=end_ts)
+
+
+def q_usage_summary(conn, start_ts=None, end_ts=None) -> dict:
+    """Headline counts for the Usage page's summary panels, windowed.
+
+    cbut's Usage page is a per-request ledger; Trae CN writes no per-request
+    record, so this page is per **session** and these are session totals. Every
+    number here is a count of something the writer stored, so a real ``0`` is
+    printed as ``0`` — except ``unmeasured``, which is reported separately for
+    the same reason ``q_kpi`` reports it: a range does not turn a derivation
+    into a measurement, so it stays all-time.
+
+    ``top_model`` is ``{"model_id", "sessions"}`` or ``None``: a session counts
+    once for the model it was set to, exactly as ``q_top_models`` ranks.
+    """
+    where, params = _time_filter(start_ts, end_ts, col=SESSION_TIME)
+
+    def one(sql, p=()):
+        return conn.execute(sql, p).fetchone()[0]
+
+    # session_models carries no timestamp of its own, so its window rides on the
+    # joined session — the same shape q_top_models already uses.
+    mconds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
+    m_and, m_params = _on_time(mconds)
+    top = conn.execute(
+        "SELECT sm.model_id, COUNT(DISTINCT sm.session_id) AS sessions"
+        "  FROM session_models sm JOIN sessions s ON s.session_id = sm.session_id"
+        f" WHERE 1=1{m_and}"
+        " GROUP BY sm.model_id ORDER BY sessions DESC, sm.model_id LIMIT 1",
+        m_params,
+    ).fetchone()
+    return {
+        "sessions": one(f"SELECT COUNT(*) FROM sessions{where}", params),
+        "projects": one(
+            f"SELECT COUNT(DISTINCT project_key) FROM sessions{where}", params),
+        "turns": one(f"SELECT COALESCE(SUM(turns),0) FROM sessions{where}", params),
+        "toolcalls": one(
+            f"SELECT COALESCE(SUM(toolcalls),0) FROM sessions{where}", params),
+        "models": one(
+            "SELECT COUNT(DISTINCT sm.model_id) FROM session_models sm"
+            " JOIN sessions s ON s.session_id = sm.session_id"
+            f" WHERE 1=1{m_and}", m_params),
+        "unmeasured": one(f"SELECT COUNT(*) FROM sessions WHERE {UNMEASURED}"),
+        "top_model": dict(top) if top else None,
+    }
 
 
 def table_names(conn) -> list:

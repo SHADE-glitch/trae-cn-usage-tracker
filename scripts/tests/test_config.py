@@ -90,9 +90,10 @@ class DefaultsTest(unittest.TestCase):
         """
         tui = load_tui("tcut_tui_for_config")
         app = tui.TrackerApp
-        # `log_limit` is absent on purpose: it drives `tcut prompts`, not the TUI,
-        # which lost its Prompts tab when the tab set was cut back to cbut's.
+        # Every key the TUI reads is compared: a class constant and DEFAULTS that
+        # disagree would leave one of them lying about the shipped behaviour.
         for key, attr in (("top_n", "DASH_TOP"),
+                          ("log_limit", "USAGE_LOG_LIMIT"),
                           ("detail_limit", "DETAIL_LIMIT"), ("name_cap", "NAME_CAP")):
             self.assertEqual(
                 db.DEFAULTS[key], getattr(app, attr),
@@ -216,9 +217,10 @@ class WiringTest(unittest.TestCase):
             return tui.TrackerApp(db_path=db_path, config=config)
 
     def test_the_app_reads_its_limits_from_the_config(self):
-        app = self._app({"top_n": 2, "detail_limit": 11,
+        app = self._app({"top_n": 2, "log_limit": 9, "detail_limit": 11,
                          "refresh_secs": 5, "sync_secs": 30, "name_cap": 15})
         self.assertEqual(app.DASH_TOP, 2)
+        self.assertEqual(app.USAGE_LOG_LIMIT, 9)
         self.assertEqual(app.DETAIL_LIMIT, 11)
         self.assertEqual(app.name_cap, 15,
                          "the app must expose the cap it will actually render with")
@@ -226,6 +228,7 @@ class WiringTest(unittest.TestCase):
     def test_with_no_config_the_app_keeps_the_shipped_defaults(self):
         app = self._app(None)
         self.assertEqual(app.DASH_TOP, db.DEFAULTS["top_n"])
+        self.assertEqual(app.USAGE_LOG_LIMIT, db.DEFAULTS["log_limit"])
         self.assertEqual(app.DETAIL_LIMIT, db.DEFAULTS["detail_limit"])
         self.assertEqual(app.name_cap, db.DEFAULTS["name_cap"])
 
@@ -304,8 +307,13 @@ class HealthSurfaceTest(unittest.TestCase):
     def _env(self, db_path, extra):
         # Strip every setting the loader can read, not a hand-picked few: an
         # ambient TCUT_* value would otherwise change the output this file asserts on.
-        hidden = set(db.ENV_NAMES.values()) | {"TCUT_CONFIG"}
+        # The host dirs go too, then are pinned below: `health` stats and globs the host,
+        # so without a pin the child reads the real ~/.trae-cn / ~/.config/Trae CN.
+        hidden = set(db.ENV_NAMES.values()) | {
+            "TCUT_CONFIG", "TCUT_TRAE_CN_HOME", "TCUT_TRAE_CN_DATA"}
         base = {k: v for k, v in os.environ.items() if k not in hidden}
+        base["TCUT_TRAE_CN_HOME"] = str(Path(db_path).parent / "no-such-trae-home")
+        base["TCUT_TRAE_CN_DATA"] = str(Path(db_path).parent / "no-such-trae-data")
         base.update(extra)
         return {"os": base, "db": str(db_path)}
 

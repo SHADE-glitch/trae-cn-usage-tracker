@@ -65,6 +65,8 @@ class PredicateTest(unittest.TestCase):
         from pathlib import Path as P
         expected = P.home() / ".local" / "share" / "trae-cn-usage-tracker" / "usage.db"
         self.assertEqual(hermetic.PROTECTED, expected)
+        self.assertEqual(hermetic.PROTECTED_DIRS,
+                         (P.home() / ".trae-cn", P.home() / ".config" / "Trae CN"))
 
     def test_a_child_with_nothing_to_point_it_away_would_use_the_real_database(self):
         stats = str(SCRIPTS / "tcut-stats.py")
@@ -122,40 +124,65 @@ class EnforcementTest(unittest.TestCase):
         """An audit hook that was never installed passes every case above vacuously."""
         with self.assertRaises(hermetic.Refusal):
             subprocess.run([sys.executable, str(SCRIPTS / "tcut-stats.py"), "--help"],
-                           capture_output=True, env=_env_without_db())
+                           capture_output=True, env=_env_without_pins())
 
-    def test_the_same_child_is_allowed_once_its_database_is_pinned(self):
-        """The matched pair for the case above.
-
-        Identical argv, one differing environment entry. Without this the previous case
-        would be satisfied by a hook that refuses every subprocess, and the rule would have
-        been replaced by a denial of service on the suite's own CLI tests.
-        """
-        env = _env_without_db()
+    def test_the_same_child_is_allowed_once_its_paths_are_pinned(self):
+        """The matched pair: both the database and both host dirs must be pinned."""
+        env = _env_without_pins()
         with tempfile.TemporaryDirectory() as tmp:
             env["TCUT_DB"] = str(Path(tmp) / "usage.db")
+            env["TCUT_TRAE_CN_HOME"] = str(Path(tmp) / "trae-home")
+            env["TCUT_TRAE_CN_DATA"] = str(Path(tmp) / "trae-data")
             proc = subprocess.run(
                 [sys.executable, str(SCRIPTS / "tcut-stats.py"), "--help"],
                 capture_output=True, text=True, env=env)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("usage", proc.stdout.lower())
 
+    def test_reading_the_real_host_footprint_is_refused(self):
+        """A file read, directory walk, or host database read is refused."""
+        for root in hermetic.PROTECTED_DIRS:
+            host_file = str(root / "fixture.jsonl")
+            self.assertIsNotNone(hermetic._protected_read(host_file))
+            with self.assertRaises(hermetic.Refusal):
+                hermetic._hook("open", (host_file, "r", 0))
+            with self.assertRaises(hermetic.Refusal):
+                hermetic._hook("os.scandir", (str(root),))
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("sqlite3.connect",
+                           (str(hermetic.PROTECTED_DIRS[0] / "state.vscdb"),))
+
+    def test_an_ordinary_test_host_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = str(Path(tmp) / "fixture.jsonl")
+            self.assertIsNone(hermetic._protected_read(candidate))
+            hermetic._hook("open", (candidate, "r", 0))
+            hermetic._hook("os.scandir", (tmp,))
+
+    def test_a_child_that_would_read_the_real_host_is_refused(self):
+        stats = str(SCRIPTS / "tcut-stats.py")
+        self.assertTrue(hermetic._child_would_read_the_real_host({"PATH": "/usr/bin"}))
+        self.assertFalse(hermetic._child_would_read_the_real_host({
+            "TCUT_TRAE_CN_HOME": "/tmp/trae-home",
+            "TCUT_TRAE_CN_DATA": "/tmp/trae-data"}))
+        with self.assertRaises(hermetic.Refusal):
+            hermetic._hook("subprocess.Popen", (
+                sys.executable, [sys.executable, stats, "health"], None,
+                {"TCUT_DB": "/tmp/usage.db",
+                 "TCUT_TRAE_CN_HOME": "/tmp/trae-home"}))
+
     def test_an_unrelated_subprocess_is_not_refused(self):
         proc = subprocess.run([sys.executable, "-c", "print('ran')"],
-                              capture_output=True, text=True, env=_env_without_db())
+                              capture_output=True, text=True, env=_env_without_pins())
         self.assertEqual(proc.returncode, 0)
         self.assertIn("ran", proc.stdout)
 
 
-def _env_without_db():
-    """The ambient environment minus anything that pins a database.
-
-    A copy with ``TCUT_DB`` removed is what a test that forgot to pin would hand the child,
-    and it is also what this case needs: the parent's own environment must not rescue the
-    child, which is the whole reason a child is a hole in the in-process rule.
-    """
+def _env_without_pins():
+    """The ambient environment minus anything that pins the database or host dirs."""
     env = dict(os.environ)
-    env.pop("TCUT_DB", None)
+    for key in ("TCUT_DB", "TCUT_TRAE_CN_HOME", "TCUT_TRAE_CN_DATA"):
+        env.pop(key, None)
     return env
 
 

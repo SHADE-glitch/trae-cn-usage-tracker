@@ -51,9 +51,18 @@ stats = load_stats()
 
 
 def clean_env(**extra):
-    """The ambient environment minus every TCUT_* switch, so output is input-determined."""
-    hidden = set(db.ENV_NAMES.values()) | {"TCUT_CONFIG"}
+    """The ambient environment minus every TCUT_* switch, so output is input-determined.
+
+    The host dirs are pinned to a path that does not exist, for the same reason: a CLI
+    child left to its defaults would read the real ``~/.trae-cn`` / ``~/.config/Trae CN``,
+    and the tripwire in ``_hermetic`` refuses that.
+    """
+    hidden = set(db.ENV_NAMES.values()) | {
+        "TCUT_CONFIG", "TCUT_TRAE_CN_HOME", "TCUT_TRAE_CN_DATA"}
     base = {k: v for k, v in os.environ.items() if k not in hidden}
+    absent = Path(tempfile.gettempdir()) / "tcut-no-such-host"
+    base["TCUT_TRAE_CN_HOME"] = str(absent / "home")
+    base["TCUT_TRAE_CN_DATA"] = str(absent / "data")
     base.update(extra)
     return base
 
@@ -281,14 +290,16 @@ class CommandTest(CliBase):
         self.assertIn("/home/user/P", out,
                       "the prompt was labelled with the workspace id, not its folder")
 
-    def test_log_limit_is_the_prompts_cap_now_that_the_tui_has_no_prompts_tab(self):
-        """``log_limit`` has exactly one reader left: ``tcut prompts``.
+    def test_log_limit_caps_the_cli_now_that_the_prompts_tab_is_gone(self):
+        """``log_limit`` still reaches the one CLI report that reads it.
 
         The Prompts tab was removed to keep the TUI on cbut's tab set, and with it
         went the four settings assertions that used to prove the value reached the
-        app. A setting no component reads is a dead key in a user's config file, so
-        this replaces those checks on the CLI side — and shows ``--limit`` winning,
-        which is the other half of ``args.limit or config["log_limit"]``.
+        app. The key is not dead — ``tcut prompts`` caps its rows with it — so this
+        holds the CLI half, and shows ``--limit`` winning, which is the other half of
+        ``args.limit or config["log_limit"]``. The TUI half is
+        ``test_config.py::test_the_app_reads_its_limits_from_the_config`` (the Usage
+        page's session log).
         """
         conn = db.open_db(self.db_path)
         conn.executemany(

@@ -50,6 +50,8 @@ class DispatcherTest(unittest.TestCase):
                 encoding="utf-8")
         self.env = dict(os.environ, TCUT_SCRIPTS=str(self.scripts),
                         TCUT_DB=str(self.root / "test.db"),
+                        TCUT_TRAE_CN_HOME=str(self.root / "trae-home"),
+                        TCUT_TRAE_CN_DATA=str(self.root / "trae-data"),
                         TCUT_VENV=sys.executable)
 
     def run_bin(self, *args, env=None):

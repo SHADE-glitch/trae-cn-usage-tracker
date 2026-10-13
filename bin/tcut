@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tcut — entry point for the Trae CN usage tracker.
 #
-#   tcut                 launch the interactive TUI (five tabs)
+#   tcut                 launch the interactive TUI (eight tabs)
 #   tcut sync            index new Trae CN data into the database
 #   tcut sync --full     rebuild the database from scratch
 #   tcut stats|sessions|recent|projects|prompts|agents|models|credits|skills|plugins|mcp|
