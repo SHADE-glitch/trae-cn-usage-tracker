@@ -240,17 +240,18 @@ def cmd_inventory(conn, args):
 
 
 def cmd_export(conn, args):
-    out = {
-        "overview": db.overview(conn),
-        "sessions": [dict(r) for r in db.q_sessions(conn)],
-        "projects": [dict(r) for r in db.q_projects(conn)],
-        "prompts": [dict(r) for r in db.q_prompts(conn)],
-        "agents": [dict(r) for r in db.q_agents(conn)],
-        "models": [dict(r) for r in db.q_models(conn)],
-        "credits": [dict(r) for r in db.q_credits(conn)],
-        "inventory": [dict(r) for r in db.q_inventory(conn)],
-        "memory": [dict(r) for r in db.q_memory(conn)],
-    }
+    """The whole index as JSON: the derived overview, then **every** table verbatim.
+
+    No window, no rollup, no derived column. `spent >=`, the windowed counts and the `~`
+    marker are query-time readings over these rows, and a machine-readable contract that
+    ships a derivation next to the stored value is how the derivation gets read as data.
+    The table list comes from the schema itself (`db.table_names`), so a table added by a
+    future migration is exported by the next run without anyone remembering to edit a list.
+    """
+    out = {"overview": db.overview(conn)}
+    for table in db.table_names(conn):
+        out[table] = [dict(r) for r in
+                      conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid')]
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 

@@ -4,7 +4,8 @@
 #   tcut                 launch the interactive TUI (five tabs)
 #   tcut sync            index new Trae CN data into the database
 #   tcut sync --full     rebuild the database from scratch
-#   tcut stats|sessions|projects|prompts|agents|skills|plugins|mcp|memory|show|recent|inventory|export|health
+#   tcut stats|sessions|recent|projects|prompts|agents|models|credits|skills|plugins|mcp|
+#        memory|show|inventory|export|health|format
 #                        headless reports (no TUI, stdlib only)
 #   tcut backup          snapshot the database before a risky step
 #   tcut restore         list snapshots, or restore one: tcut restore NAME

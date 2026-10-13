@@ -56,7 +56,7 @@ tcut models                  # model catalog: account, group, rate, context wind
 tcut inventory               # every installed row in one table
 tcut skills | plugins | mcp # installed inventory
 tcut memory                  # stored memory paragraphs
-tcut export                  # JSON export
+tcut export                  # whole index as JSON: overview + every table verbatim
 tcut health                  # paths, settings, schema, unparsed records
 tcut backup                  # create a managed SQLite snapshot
 tcut restore                 # list snapshots; add a name to restore
@@ -87,7 +87,7 @@ per-MCP-server use.
 The session-level views cbut has no room for — Sessions, Projects, Prompts, Memory — were dropped
 from the TUI on that same rule. Their rows are still indexed, and still printed: `tcut sessions`,
 `tcut projects`, `tcut prompts`, `tcut memory`. A session's detail (intent, actions, learned items,
-topics, the model it selected) is reached by opening an agent row. Dashboard and Agents each keep
+topics, the model it selected) is reached by opening an agent row. That list is bounded by the window of the row it came from and totals itself in the line above it — sessions, turns, tool calls, projects and the first→last span — where a project total prints `-` if none of those sessions carries a project key (28 of this machine's 49 do not), and an edge of the span carries `~` when it came from a session id rather than a measured activity time. Dashboard and Agents each keep
 their own time range; Skills, Plugins and MCP carry no timestamp, so they are all-time and hide the
 range selector.
 
@@ -143,7 +143,7 @@ The suite uses stdlib `unittest` and Textual's `run_test()` harness. It builds t
 fixtures, never opens the real usage database, and checks import/privacy guards, incremental parsing,
 snapshots, CLI output, TUI interactions, and content-storage boundaries.
 
-Latest local run: `Ran 220 tests ... OK`.
+Latest local run: `Ran 228 tests ... OK`.
 
 ## 🧭 Maintenance notes
 

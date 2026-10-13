@@ -450,6 +450,52 @@ class CommandTest(CliBase):
         self.assertFalse(missing.exists(), "`format` created the database it should not need")
 
 
+    def test_export_carries_every_table_the_schema_has(self):
+        """``export`` is the machine-readable contract for the whole index, so the check
+        counts tables instead of sampling them.
+
+        Eight hand-picked query sections used to be all of it: `turns`, `toolcall_events`,
+        `topics`, `session_actions`, `session_learned`, `session_models`, `workspaces`,
+        `sync_state`, `unparsed` and `meta` were indexed and exported by nobody, so reading
+        coverage meant opening the database by hand. Enumerating `sqlite_master` also fails
+        the day a migration adds a table the export never heard of — a hand-kept list is
+        incapable of failing that way, which is exactly how the claim went unexamined.
+        """
+        rc, out = self.run_cli("export")
+        self.assertEqual(rc, 0, out)
+        data = json.loads(out)
+        conn = db.open_db(self.db_path, readonly=True)
+        try:
+            tables = db.table_names(conn)
+        finally:
+            conn.close()
+        self.assertGreater(len(tables), 10,
+                           f"the enumerator returned {tables} — that is not the schema")
+        self.assertEqual(set(data) - {"overview"}, set(tables),
+                         "export is not the index: a table is missing, or a section names "
+                         "something the schema does not have")
+
+    def test_export_dumps_rows_verbatim_and_no_query_time_derivation(self):
+        """Keys are not the promise — the rows are, and neither may be a derivation.
+
+        `spent_at_least`, the windowed counts and the `~` marker are readings over these
+        rows; a JSON section that ships one beside the stored columns teaches every
+        future consumer to read it as measured data.
+        """
+        rc, out = self.run_cli("export")
+        self.assertEqual(rc, 0, out)
+        data = json.loads(out)
+        self.assertEqual([s["session_id"] for s in data["sessions"]], ["abc123def456"])
+        self.assertEqual(len(data["credit_events"]), 3, "a table exported as an empty list")
+        self.assertEqual(len(data["models"]), 2)
+        self.assertEqual(data["unparsed"], [],
+                         "the coverage table was skipped, not empty")
+        self.assertNotIn("spent_at_least", data["credit_events"][0])
+        self.assertNotIn("undated", data["agents"][0])
+        self.assertEqual(data["meta"] and all("key" in m for m in data["meta"]), True,
+                         "the schema version is the one thing a consumer must be able to see")
+
+
 class NoDefaultSubcommandTest(CliBase):
     def test_bare_invocation_is_stats(self):
         """No subcommand must not be a usage error: it is the common case."""

@@ -52,7 +52,7 @@ tcut models                  # 模型目录：账号、分组、计价倍率、�
 tcut inventory               # 所有已安装行合并成一张表
 tcut skills | plugins | mcp # 已安装清单
 tcut memory                  # 已存储的记忆段落
-tcut export                  # JSON 导出
+tcut export                  # 整个索引的 JSON：概览 + 每张表逐列原样
 tcut health                  # 路径、设置、schema、未认领记录
 tcut backup                  # 生成一份受管 SQLite 快照
 tcut restore                 # 列出快照；加名字则恢复
@@ -80,7 +80,7 @@ tab 集合与 cbut 一致，只少 **Tools**、**Tokens**、**Usage** 三页：�
 
 会话、项目、输入历史、记忆文档这四个 cbut 没有位置放下的视图，按同一条规则从 TUI 移除。数据仍然索引、
 仍然可打印：`tcut sessions`、`tcut projects`、`tcut prompts`、`tcut memory`。会话详情（intent、
-actions、learned、topic、所选模型）从 agent 行进入。Dashboard 与 Agents 各自保留独立时间范围；
+actions、learned、topic、所选模型）从 agent 行进入。这个列表受它来自哪一行的时间窗约束，并在表格上方一行给出合计：会话数、turn、tool call、项目数与首末时间跨度；若这些会话里没有一个带项目键（本机 49 个会话有 28 个不带），项目数显示 `-`；跨度的某一端若来自会话 id 而不是实测活动时刻，那端带 `~`。Dashboard 与 Agents 各自保留独立时间范围；
 Skills、Plugins、MCP 没有可用时间戳，因此为 all-time 并隐藏范围选择器。
 
 本机 49 个会话里有 25 个在明文里根本没有实测时间戳，但会话 id 的头四个十六进制字节就是它的创建秒，
@@ -128,7 +128,7 @@ SQLite**。设置 `store_content = false` 后保留元数据并删除全部这�
 当前测试套件使用标准库 `unittest` 与 Textual 的 `run_test()`。测试构造临时 Trae fixture，从不打开真实
 usage database，并覆盖 import/privacy 守卫、增量解析、快照、CLI 输出、TUI 交互和内容存储边界。
 
-最近一次本地运行：`Ran 220 tests ... OK`。
+最近一次本地运行：`Ran 228 tests ... OK`。
 
 ## 🧭 维护说明
 

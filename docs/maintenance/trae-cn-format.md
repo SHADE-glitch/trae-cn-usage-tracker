@@ -110,6 +110,23 @@ must not be phrased as a date problem. A blank panel names its own cause: `none 
 agent` when it placed sessions with no label, `no agents installed` when the inventory table
 is empty. The three have three different fixes, and only the first one is the range picker.
 
+## What `sessions` columns can and cannot be NULL (measured)
+
+Re-measured 2026-10-13 on this machine's 49 indexed sessions:
+
+| column | NULL | note |
+| --- | ---: | --- |
+| `turns`, `toolcalls` | **0** | the writer always stores a number; 25 rows carry a stored **0** because their snapshot repo has no tags |
+| `project_key`, `project` | **28** | both NULL together — snapshot-only and session-list-only rows have no workspace key |
+| `first_ts`, `last_ts` | **25** | the rows whose position comes only from `created_ts`; every one of them is stamped, so `COALESCE` never yields NULL here |
+
+Two consequences the code has to respect. A dash is owed to `projects` (28 rows have no key
+to count, so `0 projects` would be a claim about the world, not about the field), and it is
+**not** owed to `turns`/`toolcalls`: a stored 0 there is a number the indexer wrote, and
+rendering it `-` would hide the difference between "no turns recorded" and "the snapshot had
+no tags". That difference is a measurement question, not a rendering one — see *Snapshot tag
+timestamps, measured* above, and the 25 rows it reports as having no measured time.
+
 ## Encrypted boundary, measured
 
 `ModularData/ai-agent/database.db` is not treated as SQLite. It is encrypted, written by
@@ -158,3 +175,5 @@ token 数在这台机器上不存在：agent 库是加密的（首 1 MB 熵 8.00
 snapshot 的 ref 指向的是**附注 tag 对象**，不是 commit：一个会话仓 87 个 tag，全部是 `tag` 类型，要靠 `object` 行剥到 commit 再取时间。实测 commit 里 `author` 与 `committer` 87/87 相同，`tagger` 行只比 commit 晚约十秒，所以入库的是 commit 时间，只有 commit 对象读不到时才退回 tagger 时间。只认 `commit ` 头的解析器曾在这台机器上把 89 条 turn、139 条 toolcall 全部写成无时间戳，而测试当时是绿的——因为 fixture 写的是轻量 ref（ref 直指 commit），那正是真实程序不会产生的形状。本机 49 个会话里 24 个带着实测时间，25 个没有任何实测时间戳；而"任何地方都没有时间"的是 0 个，因为会话 id 能给全部 49 个定位（2026-10-12 重测）。窗口计数因此只对既无 `last_ts` 又无 `created_ts` 的行显示 `-`——这台机器上这个集合是空的，但规则必须留着：Trae 曾把 49 个里的 25 个写成没有时间，它明天就可以不再写 id 前缀。会话 id 前四个十六进制字节是创建秒，与各会话首条带时间戳的 turn 相比中位差 0.0 秒、最大 144 秒，且没有任何 turn 早于这个推导秒——它是下界，不是对中间的猜测。它单独存在 `sessions.created_ts`，只以 `COALESCE(last_ts, created_ts)` 的兜底形式进入窗口；`first_ts`/`last_ts` 的含义不变，仍是实测活动。凡打印这种推导时间的地方都带一个前导 `~`（`db.derived_mark`），因为在一张推导与实测长得一模一样的表里，推导迟早会被当成事实。
 
 `sessions.agent` 只由 memory 记录写入。2026-10-12 实测：49 个会话里 **24 个根本没有 agent 标签**，而当前 7d 窗口里那 20 个全是这 24 个之一——越新的会话越不容易被写进 memory。`agents` 是**安装清单**（本机 5 个名字），`q_agents` 靠 `s.agent = a.name` 连接，所以整个窗口一行都连不上是数据本身决定的，不是面板坏了。空面板因此必须说清自己空在哪：范围里没放下任何会话是 `none dated in <范围>`，放下了但缺那个字段是 `no session in this range names an installed agent`，清单表本身为空才是 `no agents installed`。三种空对应三种修法，只有第一种该去动范围选择器。
+
+`sessions` 各列能不能是 NULL，2026-10-13 在同一批 49 行上重测：`turns` 与 `toolcalls` **一个 NULL 都没有**（写入方永远存数字，其中 25 行存的是 **0**，因为它们的 snapshot 仓没有 tag）；`project_key` 与 `project` **28 行同时为 NULL**（只有 snapshot、或只在会话清单里出现过的行没有工作区键）；`first_ts`/`last_ts` **25 行为 NULL**，而这 25 行全部已被 `created_ts` 兜住，所以 `COALESCE` 在这里从不产生 NULL。两条后果：`projects` 欠一个 `-`（28 行没有可数的键，写 `0 projects` 是在断言世界、不是断言字段），`turns`/`toolcalls` **不欠**——那里的 0 是索引器写下的数，把它显示成 `-` 就把"没有 turn"和"snapshot 里没有 tag"抹平成同一句话。后者是测量问题不是渲染问题，参见上文《Snapshot tag timestamps, measured》所说的 25 行无实测时间。

@@ -953,6 +953,7 @@ if HAVE_TEXTUAL:
                 yield Static(f"[b]{label}[/b] · {self.value}"
                              + (f" · {self.window_label}" if self.window_label else ""),
                              id="entity-title")
+                yield Static(id="entity-summary")
                 yield Static(id="colnote-entity", classes="col-note")
                 yield DataTable(id="t-entity", zebra_stripes=True)
             yield Footer()
@@ -965,17 +966,48 @@ if HAVE_TEXTUAL:
                 table.add_columns(*cols)
             self._reload()
 
+        def _summary_line(self, s) -> str:
+            """One line of windowed totals, over exactly the rows this screen lists.
+
+            The span marks itself when an edge came from a session id rather than from a
+            measured activity time: `first_measured` aggregates only measured rows, so an
+            edge that differs from it is a derived position, and a header that prints the
+            two identically turns a derivation into a fact.
+            """
+            if not s["sessions"]:
+                return (f"no sessions · {self.window_label}" if self.window_label
+                        else "no sessions recorded")
+            first = (db.derived_mark(s["first_ts"] != s["first_measured"])
+                     + ts(s["first_ts"]))
+            last = (db.derived_mark(s["last_ts"] != s["last_measured"])
+                    + ts(s["last_ts"]))
+            # `projects` is the one total that can be unmeasurable: 28 of this machine's 49
+            # sessions carry no project key at all, so a 0 there is the absence of a field,
+            # not a counted none. turns/toolcalls are stored counts (never NULL in the real
+            # index) and their 0 is a real reading.
+            line = (" · ".join([db.count_n(s["sessions"], "session"),
+                                db.count_n(s["turns"], "turn"),
+                                db.count_n(s["toolcalls"], "tool call"),
+                                db.window_count(s["projects"], s["projects_missing"],
+                                                "project")])
+                    + f" · {first} → {last}")
+            return f"{line} · {self.window_label}" if self.window_label else line
+
         def _reload(self) -> None:
             conn = db.open_db(self.app.db_path, readonly=True)
+            # One argument dict, unpacked into both queries: the header's numbers are
+            # only worth printing if they are the same set of rows the table shows.
+            scope = {"start_ts": self.start, "end_ts": self.end,
+                     ENTITY_FILTERS[self.kind]: self.value}
             try:
-                found = db.q_sessions(
-                    conn, start_ts=self.start, end_ts=self.end,
-                    **{ENTITY_FILTERS[self.kind]: self.value})
+                found = db.q_sessions(conn, **scope)
+                totals = db.q_entity_totals(conn, **scope)
             except sqlite3.Error as exc:
                 self.app._report_query_error(exc)
                 return
             finally:
                 conn.close()
+            self.query_one("#entity-summary", Static).update(self._summary_line(totals))
             rows = [[db.derived_mark(r["derived_ts"]) + ts(r["shown_ts"]),
                      r["session_id"][:12], f"{r['turns']:,}",
                      f"{r['toolcalls']:,}", r["model_id"] or "-",
@@ -1010,6 +1042,9 @@ if HAVE_TEXTUAL:
         /* The session detail: a scrolling label/value list plus bullet lists. The
            label column is fixed so long prose values wrap in the 1fr column. */
         #entity-title { padding: 1 2; }
+        /* The drill-down's aggregate line: same gutter as the title it sits under,
+           muted so it reads as a caption and not as another heading. */
+        #entity-summary { padding: 0 2; color: $text-muted; }
         #entity-body { height: 1fr; padding: 0 1; }
         #session-body { height: 1fr; overflow-y: auto; padding: 0 1; }
         .sess-label { width: 12; color: $text-muted; }

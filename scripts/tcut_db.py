@@ -794,6 +794,68 @@ UNDATED_S = "s.last_ts IS NULL AND s.created_ts IS NULL"
 UNMEASURED = "last_ts IS NULL"
 
 
+def _entity_conds(start_ts, end_ts, project, agent, model_id):
+    """The one predicate list the session list and its header totals are built from.
+
+    Both `q_sessions` and `q_entity_totals` read this, so a header cannot count a
+    different set of rows than the table underneath it lists — the failure this repo
+    has already met twice with two numbers on one screen.
+    """
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
+    if project is not None:
+        conds.append(("COALESCE(s.project, s.project_key) = ?", project))
+    if agent is not None:
+        conds.append(("s.agent = ?", agent))
+    if model_id is not None:
+        conds.append((
+            "(SELECT sm.model_id FROM session_models sm"
+            "   WHERE sm.session_id = s.session_id"
+            "   ORDER BY CASE sm.agent_label WHEN 'agent' THEN 0"
+            "            WHEN 'solo_agent' THEN 1 ELSE 2 END, sm.agent_label"
+            "   LIMIT 1) = ?", model_id))
+    return conds
+
+
+def q_entity_totals(conn, start_ts=None, end_ts=None, project=None, agent=None,
+                    model_id=None):
+    """Windowed totals for one entity — the line its drill-down header prints.
+
+    ``sessions``/``turns``/``toolcalls``/``projects`` aggregate exactly the rows
+    ``q_sessions`` would list for the same arguments. ``first_ts``/``last_ts`` are that
+    set's span on ``COALESCE(last_ts, created_ts)`` and stay NULL over an empty set — an
+    empty span is neither the epoch nor a zero.
+
+    ``projects_missing`` counts the rows with neither a decoded project nor a raw key — on
+    this footprint that is 28 of 49 sessions, so an entity can genuinely have a session set
+    with no project to count, and a 0 there would claim a measurement. Read the pair with
+    ``window_count``. ``turns``/``toolcalls`` need no such pair because the writer never
+    leaves them NULL (measured: 0 NULL in 49 rows); they are stored counts, including the
+    stored zeros.
+
+    ``first_measured``/``last_measured`` aggregate only the rows with a *measured* time,
+    which is what lets the caller tell whether an endpoint is the derived one: if the
+    span's edge differs from its measured edge, the position came from a session id and
+    the header has to mark it.
+    """
+    conds = _entity_conds(start_ts, end_ts, project, agent, model_id)
+    where = (" WHERE " + " AND ".join(c for c, _ in conds)) if conds else ""
+    return conn.execute(
+        "SELECT COUNT(*) AS sessions,"
+        " COALESCE(SUM(s.turns), 0) AS turns,"
+        " COALESCE(SUM(s.toolcalls), 0) AS toolcalls,"
+        " COUNT(DISTINCT COALESCE(s.project, s.project_key)) AS projects,"
+        " SUM(CASE WHEN COALESCE(s.project, s.project_key) IS NULL"
+        "          THEN 1 ELSE 0 END) AS projects_missing,"
+        f" MIN({SESSION_TIME_S}) AS first_ts,"
+        f" MAX({SESSION_TIME_S}) AS last_ts,"
+        " MIN(CASE WHEN s.last_ts IS NOT NULL THEN " + SESSION_TIME_S + " END)"
+        "   AS first_measured,"
+        " MAX(CASE WHEN s.last_ts IS NOT NULL THEN " + SESSION_TIME_S + " END)"
+        "   AS last_measured"
+        f" FROM sessions s{where}",
+        [p for _, p in conds]).fetchone()
+
+
 def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
                agent=None, model_id=None):
     """Sessions in the window, most recent first.
@@ -811,18 +873,7 @@ def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
     one, else its ``solo_agent`` selection, else NULL — Trae keeps only the current
     choice per session, never a history of switches.
     """
-    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
-    if project is not None:
-        conds.append(("COALESCE(s.project, s.project_key) = ?", project))
-    if agent is not None:
-        conds.append(("s.agent = ?", agent))
-    if model_id is not None:
-        conds.append((
-            "(SELECT sm.model_id FROM session_models sm"
-            "   WHERE sm.session_id = s.session_id"
-            "   ORDER BY CASE sm.agent_label WHEN 'agent' THEN 0"
-            "            WHEN 'solo_agent' THEN 1 ELSE 2 END, sm.agent_label"
-            "   LIMIT 1) = ?", model_id))
+    conds = _entity_conds(start_ts, end_ts, project, agent, model_id)
     where = (" WHERE " + " AND ".join(c for c, _ in conds)) if conds else ""
     sql = (
         "SELECT s.session_id, s.project_key, s.project, s.day, s.agent,"
@@ -1361,6 +1412,20 @@ def q_top_projects(conn, limit=5, start_ts=None, end_ts=None):
 
 def q_top_agents(conn, limit=5, start_ts=None, end_ts=None):
     return q_agents(conn, limit=limit, start_ts=start_ts, end_ts=end_ts)
+
+
+def table_names(conn) -> list:
+    """Every user table, name-sorted — the enumerator `tcut export` walks.
+
+    Read from `sqlite_master` instead of copied from a list, because a hand-kept table list
+    is how `export` came to claim the whole index while ten indexed tables were never in it:
+    nothing could notice a table that a migration added and the export forgot. A schema
+    change now reaches the export by itself, or the guard on it says so in that one test.
+    """
+    return [r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master"
+        " WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        " ORDER BY name")]
 
 
 def overview(conn) -> dict:

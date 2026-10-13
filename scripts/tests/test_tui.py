@@ -369,6 +369,116 @@ class DrillDownTest(TuiBase):
                          "the entity screen stole a session row's own routing")
         self.assertEqual(sid, "bbbbbbbbbbbb2222")
 
+    def test_the_drill_down_totals_the_rows_it_lists(self):
+        """The header line cbut's drill-downs have: what this set of rows adds up to.
+
+        The table lists turns and tool calls per session and nothing totals them, so
+        "the sessions behind this agent" had no answer to "how much work". The count in
+        the first field is also compared with the row count, because the header and the
+        list are only honest if they are the same set of rows.
+        """
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                await self._open(pilot, "tab-agents", "t-agents", want_cell="builder")
+                screen = app.screen
+                return (str(screen.query_one("#entity-summary", Static).render()),
+                        screen.query_one("#t-entity", DataTable).row_count)
+        line, listed = run(go())
+        parts = line.split(" · ")
+        self.assertEqual(parts[0], f"{listed} session",
+                         "the header counted a different set than the table listed")
+        self.assertIn("3 turns", line, "the turns of the listed sessions were not totalled")
+        self.assertIn("7 tool calls", line)
+        self.assertIn("1 project", line)
+        self.assertIn("→", line, "the header shows no span")
+        self.assertIn("7 days", line, "the header does not say which window it counted")
+
+    def test_a_session_set_with_no_project_key_reads_as_unknown_not_zero(self):
+        """`0 projects` beside a session count claims a measurement the field never gave.
+
+        Found on the real index: 28 of 49 sessions carry neither a decoded project nor a raw
+        key, and the agent that owns 22 of them has no key on any — so the header's first
+        shape read `22 sessions · 0 projects`, as though they had happened nowhere. `turns`
+        and `toolcalls` are not that case and must not be dashed: the writer never leaves
+        them NULL (measured: 0 NULL in 49 rows), so a stored 0 there is a reading.
+        """
+        self._insert("INSERT INTO agents(name, kind, description)"
+                     " VALUES('blank',NULL,NULL)")
+        self._insert("INSERT INTO sessions(session_id, project_key, project, agent,"
+                     " last_ts, turns, toolcalls) VALUES"
+                     " ('blank000000000001',NULL,NULL,'blank',1700001500000,0,0),"
+                     " ('blank000000000002',NULL,NULL,'blank',1700001600000,3,5)")
+
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                await self._open(pilot, "tab-agents", "t-agents", want_cell="blank")
+                return str(app.screen.query_one("#entity-summary", Static).render())
+        fields = run(go()).split(" · ")
+        self.assertEqual(fields[:4], ["2 sessions", "3 turns", "5 tool calls", "-"],
+                         "an unmeasurable project total printed as a counted zero,"
+                         " or a stored count lost its number")
+
+    def test_a_keyed_session_set_prints_its_project_count(self):
+        # The other half of the rule: when the key is there, the number is printed, not
+        # hidden behind the dash the missing case needs.
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                await self._open(pilot, "tab-agents", "t-agents", want_cell="builder")
+                return str(app.screen.query_one("#entity-summary", Static).render())
+        self.assertEqual(run(go()).split(" · ")[3], "1 project")
+
+
+    def test_the_header_and_the_list_agree_when_the_window_cuts_the_set(self):
+        # Three sessions for one agent, one of them 400 days back. The tab counts two,
+        # the header must count two, and the list must hold two rows — three readings of
+        # one window, which is the same disagreement this repo already fixed twice.
+        self._insert("INSERT INTO agents(name, kind, description)"
+                     " VALUES('spread',NULL,NULL)")
+        for n, ts_ms in ((1, 1700001500000), (2, 1700001600000),
+                         (3, int(1700002000 - 400 * 86400) * 1000)):
+            self._insert("INSERT INTO sessions(session_id, project_key, agent, last_ts)"
+                         " VALUES(?, '-p--p2-a', 'spread', ?)",
+                         (f"spread00000000000000000{n}", ts_ms))
+
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                await self._open(pilot, "tab-agents", "t-agents", want_cell="spread")
+                screen = app.screen
+                return (str(screen.query_one("#entity-summary", Static).render()),
+                        screen.query_one("#t-entity", DataTable).row_count)
+        line, listed = run(go())
+        self.assertEqual(listed, 2, "the windowed list kept the out-of-range session")
+        self.assertEqual(line.split(" · ")[0], "2 sessions")
+
+    def test_the_summary_marks_a_span_whose_edge_came_from_the_id(self):
+        """A derived session has no measured time, so its span edges are derived too."""
+        import tcut_db as db
+        sid = ("%08x" % 1700001000) + "0000000000000000"
+        self._insert("INSERT INTO agents(name, kind, description)"
+                     " VALUES('stamper',NULL,NULL)")
+        self._insert("INSERT INTO sessions(session_id, project_key, agent, last_ts,"
+                     " turns, toolcalls) VALUES(?, '-p--p2-a', 'stamper', NULL, 2, 5)",
+                     (sid[:24],))
+        conn = db.open_db(self.db_path)
+        db.stamp_created_ts(conn)
+        conn.commit()
+        conn.close()
+
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                await self._open(pilot, "tab-agents", "t-agents", want_cell="stamper")
+                return str(app.screen.query_one("#entity-summary", Static).render())
+        line = run(go())
+        span = [p for p in line.split(" · ") if "→" in p]
+        self.assertEqual(len(span), 1, f"no span in {line!r}")
+        self.assertTrue(span[0].startswith("~"),
+                        f"{span[0]!r} presents a derived position as a measurement")
+
     def test_an_unroutable_row_says_why_instead_of_silently_ignoring_enter(self):
         async def go():
             app = self.app()

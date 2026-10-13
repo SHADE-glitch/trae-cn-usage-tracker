@@ -5,6 +5,7 @@ before Python starts. These tests drive it with temporary script stubs and asser
 rules without opening a real database.
 """
 
+import importlib.util
 import os
 import re
 import subprocess
@@ -20,6 +21,15 @@ import _hermetic  # noqa: E402,F401
 
 BIN = ROOT / "bin" / "tcut"
 TUI = ROOT / "scripts" / "tcut-tui.py"
+SCRIPTS = ROOT / "scripts"
+
+# The help text is checked against the command table the dispatcher actually routes to,
+# so the table has to be loaded — not copied into this file, which is how it drifted once.
+sys.path.insert(0, str(SCRIPTS))          # tcut-stats imports tcut_db by module name
+_spec = importlib.util.spec_from_file_location(
+    "tcut_stats_for_dispatcher", SCRIPTS / "tcut-stats.py")
+stats = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(stats)
 
 # The help text counts tabs in words, so the check needs the words.
 NUMERAL_WORDS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
@@ -84,6 +94,37 @@ class DispatcherTest(unittest.TestCase):
         proc = self.run_bin("stats", env=env)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("neither a venv dir nor an executable", proc.stderr)
+
+
+    def test_the_help_names_every_headless_command(self):
+        """`tcut help` is what a person reads when the TUI will not start.
+
+        The header is a hand-copied list, and it had fallen behind the CLI it dispatches to:
+        `models`, `credits` and `format` were reachable commands no help line mentioned. The
+        check reads the real command table in both directions, so adding a command only
+        passes once the help text names it — and renaming one cannot leave a ghost behind.
+        """
+        proc = self.run_bin("help")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        words = set()
+        for line in proc.stdout.splitlines():
+            # The header's command lines carry the indentation the comment block used,
+            # so the prefix test strips it: the old substring assertions passed on
+            # lines that never started where this looks.
+            line = line.lstrip()
+            if line.startswith("tcut "):
+                words.update(t for t in line.split() if t.isalpha() and t.islower())
+        piped = set()
+        for token in proc.stdout.split():
+            if "|" in token:
+                piped.update(p for p in token.split("|") if p.isalpha() and p.islower())
+        self.assertTrue(piped, "no `|` command list in the help — the pattern is wrong")
+        named = words | piped
+        self.assertFalse(set(stats.COMMANDS) - named,
+                         f"bin/tcut help never names {sorted(set(stats.COMMANDS) - named)}")
+        ghost = piped - set(stats.COMMANDS)
+        self.assertFalse(ghost,
+                         f"bin/tcut help advertises {sorted(ghost)} that no CLI command is")
 
 
 if __name__ == "__main__":
