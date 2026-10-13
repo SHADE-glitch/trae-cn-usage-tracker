@@ -139,3 +139,74 @@ Evidence L0 2026-10-12 `python3 -m unittest discover -s scripts/tests` — 215 t
 Cost     A rename is now one edit the suite reports with line numbers; the registry can no longer be
          silently ahead of or behind the parser. It checks the coupling, not the *values* Trae writes.
 Commit   b536f2e
+
+### D-009 · 2026-10-13 · fix
+Symptom  `tcut export` was documented as the machine-readable form of the whole index and emitted
+         eight hand-copied query sections instead: `turns`, `toolcall_events`, `topics`,
+         `session_actions`, `session_learned`, `session_models`, `workspaces`, `sync_state`,
+         `unparsed` and `meta` were indexed and exported by nobody. Reading the index's coverage
+         meant opening the database, and the test that owned the claim only checked that the JSON
+         parsed plus three fields — so the gap could not be noticed from either side. A hand-kept
+         table list also cannot fail when a future migration adds a table, which is how the claim
+         stayed unexamined.
+Change   `db.table_names` enumerates `sqlite_master`, `cmd_export` dumps every table verbatim
+         ordered by rowid, and the only derived section left is `overview`. Query-time readings
+         (`spent_at_least`, the windowed counts, the `~` marker) are deliberately absent: a
+         derivation shipped beside stored columns gets read as stored data. The check compares the
+         exported key set with the schema's table set in both directions — missing table or ghost
+         section — and a second case reads rows, not just keys.
+Evidence L0 2026-10-13 228 tests OK; `test_stats.py`
+         `test_export_carries_every_table_the_schema_has` and
+         `test_export_dumps_rows_verbatim_and_no_query_time_derivation`. Reversals in throwaway
+         copies, control green first: loop skips one table, section list back to hand-copied, a
+         ghost section added, a derivation leaked into the dump — 4/4 red. L1 on the real footprint
+         now reports 18 sections (`sessions 49`, `turns 89`, `toolcall_events 139`, `prompts 293`,
+         `models 284`, `sync_state 84`, `unparsed 0`, `meta` = schema_version 4).
+Cost     One breaking change to the JSON shape: the old `projects`, `credits` and the `model_id`
+         that rode on `sessions` are gone, their inputs are now present as raw tables. A dashboard
+         that reads the schema itself has no reason left to open the database by hand.
+Commit   b0dcd72
+
+### D-010 · 2026-10-13 · fix
+Symptom  The agent drill-down listed sessions and totalled nothing, and the header's first shape
+         printed `22 sessions · 0 projects` for exactly the set where no session carries a project
+         key (measured: 28 of 49 sessions have neither a decoded project nor a raw key). That is a
+         claim about the world built out of a missing field — the same class as an empty token
+         panel reading as zero.
+Change   `db.q_entity_totals` aggregates the entity's windowed sessions, turns, tool calls,
+         distinct projects and the first→last span. It builds its predicates from
+         `db._entity_conds`, the same list `q_sessions` now uses, so the header cannot count a
+         different set than the table beneath it. `projects` pairs with `projects_missing` and is
+         read through `window_count`, printing `-` when no row had a key. `turns`/`toolcalls` get
+         **no** dash: measured on this footprint they are never NULL (0 of 49), so a stored 0 is a
+         reading and dashing it would flatten "no turns" into "no snapshot tags". Each edge of the
+         span is marked separately against `first_measured`/`last_measured`, because a set can be
+         dated at one end by a session id and at the other by Trae.
+Evidence L0 2026-10-13 228 tests OK; `test_tui.py` `test_the_drill_down_totals_the_rows_it_lists`,
+         `test_the_header_and_the_list_agree_when_the_window_cuts_the_set`,
+         `test_the_summary_marks_a_span_whose_edge_came_from_the_id`,
+         `test_a_session_set_with_no_project_key_reads_as_unknown_not_zero` and its keyed
+         counterpart. Reversals, control green first: header ignores the window, header stops
+         sharing the list's filter, derived edge unmarked, project dash removed, line never
+         filled — 5/5 red. Real index: `builder · All time · 22 sessions · 0 turns · 0 tool calls ·
+         - · ~04-26 11:22 → ~09-05 08:56`, `solo_coder · 2 sessions · 41 turns · 4 tool calls · 1
+         project · ~09-05 08:59 → 09-25 20:22`.
+Cost     One extra aggregate query per drill-down. It also commits the repo to checking what the
+         writer stores before adding a second dash — the reason `turns` is not dashed here is a
+         measurement, not a judgement.
+Commit   b0dcd72
+
+### D-011 · 2026-10-13 · fix
+Symptom  `bin/tcut`'s header block named 14 of the 17 headless commands: `models`, `credits` and
+         `format` were reachable but unlisted. That header is what a person reads when the TUI
+         venv is broken, so the dispatcher's own help under-reported the tool it dispatches to.
+Change   The block lists every command, and the guard reads the real `COMMANDS` table instead of
+         the prose: a command the help never names fails, and a name the help still advertises
+         after the command is gone fails too. `test_dispatcher.py` loads `tcut-stats.py` for this,
+         the same way the tab-count guard (D-007) reads the app rather than a document.
+Evidence L0 2026-10-13 `test_dispatcher.py::test_the_help_names_every_headless_command`.
+         Reversals, control green first: help back to the short list, help given a name no command
+         is — 2/2 red. The extraction had to strip the comment block's indentation after the first
+         version passed over lines that never started where the pattern looked.
+Cost     Adding a command now owes a help line, and deleting one does not get to leave a ghost.
+Commit   b0dcd72
