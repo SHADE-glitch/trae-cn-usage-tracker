@@ -289,7 +289,7 @@ database.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 245 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 254 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual` installed —
@@ -315,6 +315,7 @@ the import allowlist that keeps it that way).
 | `test_dispatcher.py` | 6 | `bin/tcut`: subcommand routing, venv resolution, help without a resolvable install |
 | `test_readme_bilingual.py` | 4 | the two READMEs stay one document in two languages, and every table-of-contents link has a heading to land on |
 | `test_readme_counts.py` | 2 | every suite total in either README equals what `unittest discover` counts, and both pages document every setting the loader knows |
+| `test_conventions.py` | 9 | the dimension-A root layer is present at the root, AGENTS.md names its dimension in one line instead of quoting the standard's body, and no runtime state the ignore list covers is tracked |
 
 `test_readme_counts.py` is what keeps the two numbers above honest: a total that drifts fails the
 suite. The suites are read off the syntax trees, so a suite added without a row here is a count
