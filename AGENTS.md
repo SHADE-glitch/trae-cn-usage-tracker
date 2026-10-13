@@ -78,8 +78,100 @@ Named by what the claim needs, not by the tool:
 (`requires-python`) and the highest version measured green here. It is not the interpreter you develop
 on (`install.sh` builds a venv), and a green run says nothing about a version it did not run.
 
+## Release / version
+
+The project's version lives in `pyproject.toml` (`[project].version`) and nowhere else; it is
+currently `0.5.0`. Bump it in that one file when a release is cut — the READMEs and `CHANGELOG.md`
+describe behaviour and do not carry a version to keep in sync. There is no PyPI publish step: the
+tool runs from a checkout, so the version only needs to move when a documented change ships.
+
+## Invariants and how to check them
+
+Four promises are load-bearing enough that prose is not proof. Each has a command that fails when
+the promise breaks — a rule without a check is a preference.
+
+**1. Nothing leaves the machine.** No production script imports a socket, HTTP client, mail,
+process-spawning or thread module, and none reaches a module by name.
+
+```bash
+python3 -m unittest scripts.tests.test_privacy      # AST import allowlist over the 4 production scripts
+```
+
+The check keeps an allowlist of roots per file and names the forbidden ones broadly (raw sockets,
+`subprocess`, `multiprocessing`, `threading`), so adding one is a test failure rather than a quiet
+convention change. A second pass catches a module reached through `__import__` /
+`importlib.import_module` / `eval` / `exec`, which the import allowlist cannot see, and a self-test
+proves that detector actually fires.
+
+**2. Trae's own tree is never written.** `~/.trae-cn` and `~/.config/Trae CN` are opened for reading
+only; indexing leaves them byte-identical.
+
+```bash
+python3 -m unittest scripts.tests.test_privacy      # fingerprints a fixture Trae tree around a real index run
+```
+
+The test builds a Trae-shaped fixture, hashes every file, runs the actual indexer over it, and
+re-hashes: one changed byte fails it, and it asserts nothing new appeared beside the database (no
+stray journal or side file). This is the invariant most likely to be broken by accident — a stray
+`open(..., "w")` on a Trae path — so it is proven by content hash rather than by review.
+
+**3. Content is stored only through the documented switch.** Prose (session summaries, prompt
+history, memory paragraphs) *is* kept when `store_content = true` — the default, and the point of
+the tool, since Trae CN persists nothing else readable. With `store_content = false` the database
+must hold **zero** prose in any table.
+
+```bash
+python3 -m unittest scripts.tests.test_privacy      # sentinels in every prose slot, scanned across every text column
+```
+
+The sentinel test turns the switch off and scans **every text value of every table** — not the
+columns named today, because a leak moved once the moment it was guarded in a named column — for
+seven sentinel paragraphs placed where handlers genuinely read. It carries a positive control
+(identifiers that *must* survive), without which the scan would pass on a database that indexed
+nothing. A second test proves the switch also **purges** prose already stored.
+
+**4. A model entry's credentials are never stored.** A custom-provider catalog entry carries
+`ak` / `sk` / `base_url` / `custom_config` next to the fields we do read; the whitelist is the only
+thing between those and the index.
+
+```bash
+python3 -m unittest scripts.tests.test_sync          # sentinel credentials scanned against everything stored
+python3 -m unittest scripts.tests.test_format_registry
+```
+
+The first feeds `ak`/`sk`/`base_url`/`custom_config` sentinels into a catalog entry and asserts none
+reaches any stored value while the entry itself lands. The second is the static half: it fails if
+one of those names ever appears as a `.get()` key in the reader, which is how a credential would
+first reach the index.
+
+Maintenance material — the format surface itself, the version matrix, the size and latency baseline
+— lives in [`docs/maintenance/`](docs/maintenance/), and `test_maintenance_docs.py` keeps the
+generated part of it tied to the code.
+
 ## Format coupling
 
 Trae owns the data; this tool only reads it. **The main maintenance risk is upstream changing the file shapes**, and the failure mode is silent: a renamed field reads as `NULL`, a renamed source is simply unclaimed, the panels empty out, `tcut sync` prints "done", and CI stays green.
 
 Keep parser assumptions in `docs/maintenance/trae-cn-format.md`. If a Trae file shape changes, update the format note, the fixture test, and the unparsed reason that makes the change observable.
+
+## Listed on the GitHub profile
+
+**This repository is not on the owner's profile front page, and that is not an oversight.** It is a
+**private** repository, and `SHADE-glitch/SHADE-glitch` lists public repositories only — the two
+whitelisted private repos are the sole exception, and this is not one of them. The profile's own
+`AGENTS.md` is the authoritative rulebook, and its §1 is explicit on both counts: naming another
+private repo needs the owner's spoken approval first, and **a repo must never be flipped to public
+just so it can be listed** — that is a privacy decision, not a profile edit.
+
+So there is no listing obligation today, and this section exists to say so rather than to be
+silently absent. If the repo is ever made public **and** added to the profile, this section becomes
+the reciprocal of the profile's §6 index, and these facts must then be kept true on the front page:
+
+- **Rename / transfer / delete** — the profile link dies; fix the row.
+- **Purpose drift** — the profile's one-line description must still be true; the claims it copies —
+  *"no network"*, "dev tooling" — are **promises**, not slogans.
+- **LICENSE change** — the profile's license badge must equal this repo's `LICENSE`.
+- **Version / runtime declaration change** — the matching badge must equal this repo's declaration.
+- **Freeze / archive** — say so on the profile; never leave a stale "maintained".
+- **Public ↔ private** — a repo that goes private again must be **delisted**.
+
