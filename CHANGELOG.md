@@ -210,3 +210,52 @@ Evidence L0 2026-10-13 `test_dispatcher.py::test_the_help_names_every_headless_c
          version passed over lines that never started where the pattern looked.
 Cost     Adding a command now owes a help line, and deleting one does not get to leave a ghost.
 Commit   b0dcd72
+
+### D-012 · 2026-10-13 · guard
+Symptom  The tripwire guarded one path. `_hermetic.py` recognised the live `usage.db` and nothing
+         else, so a fixture was free to read `~/.trae-cn/**` — and the host is *input* to this
+         reader, not state it could damage, which is exactly why the rule had never covered it. A
+         test that reads the host stops testing the code and starts testing the machine. The
+         sibling `ocut` shipped that bug: a fixture opened the developer's real plugin-events
+         sidecar, so three cases were green in CI (no sidecar) and red on the one machine that
+         needed them red.
+Change   `PROTECTED_DIRS` carries the agent home and the VS Code user-data dir, and the hooks
+         cover three read paths instead of one — `open`, `os.scandir`/`os.listdir` (a glob reaches
+         a host file's contents without ever calling `open`) and `sqlite3.connect`. A child must
+         pin `TCUT_TRAE_CN_HOME` **and** `TCUT_TRAE_CN_DATA` for the reason it must pin
+         `TCUT_DB`: this launcher resolves them independently, so pinning the database left both
+         host dirs as wide open as before. Ten cases became thirteen.
+Evidence L0 2026-10-13 245 tests OK. Each new refusal ships with the case that keeps it honest:
+         `test_an_ordinary_test_host_is_left_alone` walks an ordinary temp path through the same
+         three hooks and must come back clean, so a hook that refuses everything fails the suite
+         rather than passing it, and the child refusal has the matched positive
+         `test_the_same_child_is_allowed_once_its_paths_are_pinned`.
+Cost     A test that shells out now pins two more variables or it is refused. That refusal at
+         commit time is the cheaper place to learn it than a red test on one machine.
+Commit   e1397bc
+
+### D-013 · 2026-10-13 · fix
+Symptom  Three comments and one case name described a TUI that no longer existed, and every
+         assertion in them was still correct — so nothing was red, which is the whole problem. The
+         Usage page now reads `log_limit`, yet `DEFAULTS["log_limit"]` still said "Prompts page
+         rows"; `test_config.py` still skipped `log_limit` in the constants comparison on the
+         stated ground that "it drives `tcut prompts`, not the TUI"; and `test_stats.py`'s case was
+         named `..._now_that_the_tui_has_no_prompts_tab`, a fact that stayed true after the tab
+         came back with a different job. Separately, three docstrings in `tcut_db.py` and
+         `tcut-tui.py` were written in Chinese, which the machine-wide standard reserves for the
+         two bilingual READMEs — a language-policy violation in a repository whose own rule says
+         "docs are bilingual, code comments are not".
+Change   Each comment now names both readers of the key; `log_limit` joins the constants
+         comparison in `test_the_defaults_match_the_tuis_own_constants`, and that case's own
+         comment says every key a renderer reads participates. The `test_stats.py` case is renamed
+         for what it does now (`..._caps_the_cli_now_that_the_prompts_tab_is_gone`) and points at
+         `test_config.py` for the TUI side. The three docstrings are English. `bin/tcut`'s help
+         says eight tabs, which is what it launches.
+Evidence L0 2026-10-13 245 tests OK. No provocation, and none is possible: the assertions were
+         valid before the change and are valid after it — the defect was in the sentences, not the
+         checks, which is why the suite could not find it and why the fix is `fix` rather than
+         `guard`. The Chinese in `test_sync.py` is percent-decoding test data and is left alone
+         under the standard's verbatim-literal exemption.
+Cost     A comment that describes behaviour is now a claim someone has to keep true, and there is
+         no check that reads them. The only control is reading the diff.
+Commit   e1397bc
