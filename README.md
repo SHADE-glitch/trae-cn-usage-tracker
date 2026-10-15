@@ -10,6 +10,14 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/trae-cn-usage-tracker)
 
+**What it is** — A passive, read-only tracker for Trae CN: an eight-tab TUI and headless reports over the skills, agents, plugins and MCP servers installed, the tool calls made, and the credit balance the account was left at.
+
+**What it solves** — Trae CN persists little that is readable; `tcut` indexes what it can into one local SQLite file and is honest about the gaps it cannot fill.
+
+**How to run** — `./install.sh`, then `tcut sync`.
+
+**Where to look** — See [AGENTS.md](AGENTS.md) and [MAINTENANCE.md](MAINTENANCE.md).
+
 > 🔭 See how you **actually** use Trae CN — every 🎯 skill, 🤖 agent, 🧩 plugin and
 > 🔌 MCP server that is installed, every 🧰 tool call that was made, and the 💳 credits
 > the account was left at.

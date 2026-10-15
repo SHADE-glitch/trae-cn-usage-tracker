@@ -10,6 +10,14 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/trae-cn-usage-tracker)
 
+**是什么** —— 一个针对 Trae CN 的被动只读追踪器：八 tab 的 TUI 与无头报告，覆盖已安装的 skill、agent、插件与 MCP server、发生过的工具调用，以及账户最后的 credit 余额。
+
+**解决什么** —— Trae CN 几乎不留可读数据；`tcut` 把能读到的索引进一个本地 SQLite 文件，并如实标出它填不上的空白。
+
+**怎么跑** —— `./install.sh`，然后 `tcut sync`。
+
+**去哪看** —— 见 [AGENTS.md](AGENTS.md) 与 [MAINTENANCE.md](MAINTENANCE.md)。
+
 > 🔭 看看你**实际**怎么用 Trae CN —— 装了哪些 🎯 skill、🤖 agent、🧩 plugin、🔌 MCP server，
 > 发生过多少次 🧰 工具调用，以及账户最后被扣到多少 💳 credits。
 
