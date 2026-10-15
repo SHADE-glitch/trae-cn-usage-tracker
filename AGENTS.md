@@ -126,11 +126,14 @@ tool runs from a checkout, so the version only needs to move when a documented c
 
 ## Conventions
 
-- **Docs are bilingual**: `README.md` (English, landing page) and `README.zh-CN.md` (Chinese). Edit both together and keep section order aligned; a section added on one side alone is drift.
 - **Settings are read once, in one place.** `db.load_config()` resolves environment > file > `DEFAULTS`. Adding a knob means: one entry in `DEFAULTS`, one in `ENV_NAMES`, one in `_BOUNDS`, and one assignment in the app — `test_config.py::test_the_defaults_match_the_tuis_own_constants` compares each key the TUI reads against the class constant it shadows, so a settings layer cannot quietly retune shipped behaviour. The READMEs are part of the surface, not documentation someone does later: `test_both_readmes_document_every_setting` requires every default and every override name to appear in both languages. `tcut health` prints whatever `load_config()` returned, keyed by the names the file uses (`test_health_prints_every_key_the_loader_knows` enumerates `DEFAULTS` against the output), so a knob cannot be added and go unreported. A malformed file raises `ConfigError` and the entry point turns it into a message naming the path; **never fall back silently**.
 - **A settings case must pass in someone else's shell.** Anything asserting the file or the defaults is asserting them *under* the environment, which outranks both — so the case reads as a settings-layer regression the moment a developer exports one `TCUT_*` value. `test_config.py` wraps those cases in `no_settings_env()`, which hides **every name derived from `db.ENV_NAMES`**.
 - **A behaviour change ships with a case that fails without it.** If no test goes red when you undo the change, the change is not verified yet — and provoke it: remove the fix on purpose and read the failure.
 - **A comment that describes behaviour is a claim.** The three stale comments this round found were all *assertions that stayed true while their prose went false* — `DEFAULTS["log_limit"]` still said "Prompts page rows" after the Usage page became its second reader, and `test_config.py` still excused `log_limit` from the constants comparison for the same reason. No test catches that class of drift; read the comment.
+
+## Docs & commits
+
+- **Docs are bilingual**: `README.md` (English, landing page) and `README.zh-CN.md` (Chinese). Edit both together and keep section order aligned; a section added on one side alone is drift.
 - Commit messages are **English**, in the repository's own Conventional style (`feat` / `fix` / `test` / `docs` / `guard` / `chore`), code before docs.
 
 ## Recording conventions
