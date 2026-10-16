@@ -305,3 +305,22 @@ Evidence 2026-10-16: CodeBuddy CLI (`-p --tools ''`, every tool disabled) in a d
 Cost     Both hooks name `~/.agents`, absent in another clone, so they are skipped there — the
          pointer stays the portable part. Nothing is copied, so nothing can drift.
 Commit   923c26a
+
+### D-016 · 2026-10-16 · fix
+Symptom  Three non-whitelisted `docs/maintenance/*.md` carried Chinese `## 中文说明` prose
+         summaries, which dimension A forbids: it reserves bilingual documents for the README and
+         MAINTENANCE pairs, so a document under `docs/` holding Chinese is a defect. Worse,
+         `test_maintenance_docs.py` asserted the opposite — `compatibility.md` had to contain at
+         least 20 CJK characters — so the guard blessed the drift instead of catching it.
+Change   Translate the three `## 中文说明` sections into English `## Summary` sections (meaning
+         kept, heading renamed), and state the English-only intent in `docs/maintenance/README.md`
+         the way the sibling `opencode-usage-tracker` does. In `test_maintenance_docs.py`, replace
+         the `>= 20 CJK` assertion with `== 0`: the document must carry no Chinese at all.
+Evidence L0 2026-10-16 `python3 -m unittest discover -s scripts/tests` — 254 tests OK (the flip is
+         not a new case, so the README total is unchanged). `grep -rlP '[\x{4e00}-\x{9fff}]' docs
+         --include='*.md'` prints nothing.
+Cost     The summaries are English prose that partly restates the sections above them; deleting
+         them outright was the alternative and was rejected to keep the meaning. The guard now
+         fails on a Chinese character in `compatibility.md` instead of requiring one, so the same
+         class of drift is caught in the other direction.
+Commit   29d1cdb
