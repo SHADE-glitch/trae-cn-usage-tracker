@@ -172,7 +172,12 @@ class FormatDocContentTest(unittest.TestCase):
         for marker in ("Python", "3.11", "Trae CN", "Textual 8.2", "store_content"):
             with self.subTest(marker=marker):
                 self.assertIn(marker, text)
-        self.assertGreaterEqual(len(re.findall(r"[\u4e00-\u9fff]", text)), 20)
+        # Dimension A keeps only the README / MAINTENANCE files bilingual, so this
+        # non-whitelisted document must carry no Chinese at all. The assertion used to demand
+        # the opposite (>= 20 CJK characters), which made the guard bless the very drift the
+        # language policy forbids.
+        self.assertEqual(re.findall(r"[\u4e00-\u9fff]", text), [],
+                         "compatibility.md carries Chinese; docs/maintenance is English-only")
         # The schema version belongs to the code, not to whoever last edited the table.
         # This doc said "currently 3" through the v4 migration; a reader who trusted it
         # would open a database the indexer is about to upgrade.

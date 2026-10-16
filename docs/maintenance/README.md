@@ -10,6 +10,10 @@ prints "done", and CI stays green.
 | [`compatibility.md`](compatibility.md) | Choosing what to claim is supported, or a version string needs updating |
 | [`measurements.md`](measurements.md) | Judging a size or performance change, or comparing against the recorded baseline |
 
+These three are English-only on purpose: they carry commands and readings, not prose a reader
+needs in two languages. The bilingual pair of documents is `README.md` / `README.zh-CN.md` and
+`MAINTENANCE.md` / `MAINTENANCE.zh-CN.md`.
+
 Three standing checks cover this area — all part of `python3 -m unittest discover -s scripts/tests`:
 
 - `test_format_registry.py` — the parser and the registry at the top of `scripts/tcut-sync.py` agree,
