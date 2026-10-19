@@ -324,3 +324,12 @@ Cost     The summaries are English prose that partly restates the sections above
          fails on a Chinese character in `compatibility.md` instead of requiring one, so the same
          class of drift is caught in the other direction.
 Commit   29d1cdb
+
+### D-017 · 2026-10-19 · chore
+
+Symptom  AGENTS.md cited the shared standard by bare STANDARD.md, a name that only resolves via
+         the pointer block above it.
+Change   The reference now carries the full ~/.agents/standards/STANDARD.md path.
+Evidence 2026-10-19: python3 -m unittest discover -s scripts/tests — 254 tests, OK.
+Cost     None; wording only.
+Commit   df18129
