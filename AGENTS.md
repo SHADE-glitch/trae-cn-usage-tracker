@@ -143,7 +143,7 @@ tool runs from a checkout, so the version only needs to move when a documented c
 
 ## Recording conventions
 
-Common CHANGELOG rules: `STANDARD.md` §3.
+Common CHANGELOG rules: `~/.agents/standards/STANDARD.md` §3.
 
 - The `feat` exclusion is one regex over the commit subject inside the check; it must not decay into a per-commit skip flag. Features are documented in the READMEs.
 - The record is held to the same metadata-not-content rule as the code.
