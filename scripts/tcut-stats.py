@@ -202,10 +202,24 @@ def cmd_show(conn, args):
     # One line per agent label: a session can carry an `agent` and a `solo_agent`
     # selection at the same time.
     selections = db.q_session_models(conn, args.session_id)
+    credits = {(c["agent_label"], c["model_id"]): c["credits"]
+               for c in db.q_session_credits(conn, args.session_id)}
     for m in selections:
-        print(f"  model     {m['agent_label']}: {m['model_id']}")
+        name = m["model"] or m["model_id"] or "-"
+        route = db.route_label(m["provider"], m["third_party"])
+        print(f"  model     {m['agent_label']}: {name} · {route}")
+        # The raw id is kept: it is what Trae wrote, and a decode can be wrong in a
+        # way the reader can only see by comparing the two lines.
+        print(f"  raw id    {m['agent_label']}: {m['model_id']}")
+        share = credits.get((m["agent_label"], m["model_id"]))
+        print("  credits   "
+              f"{m['agent_label']}: "
+              f"{db.credit_num(share) if share is not None else '-'} est.")
     if not selections:
         print("  model     -")
+    # One line that says the absence out loud, so `tcut show` never looks like it
+    # merely forgot to print token counts.
+    print("  tokens    not recorded (Trae writes none, 3P included)")
     print(f"  day       {row['day'] or '-'}")
     print(f"  turns     {row['turns']}   toolcalls {row['toolcalls']}")
     print(f"  span      {_ms(row['first_ts'])} → {_ms(row['last_ts'])}")

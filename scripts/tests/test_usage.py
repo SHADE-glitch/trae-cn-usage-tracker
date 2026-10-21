@@ -58,6 +58,10 @@ class UsageBase(unittest.TestCase):
         db.ensure_schema(self.conn)
         self.addCleanup(self.conn.close)
         self._seed()
+        # A real sync decodes at the end of every run; the fixtures do the same so
+        # the queries below read the same rows the app will.
+        db.decode_session_models(self.conn)
+        self.conn.commit()
 
     def _seed(self):
         self.conn.executescript(
@@ -173,8 +177,13 @@ class UsageSummaryTest(UsageBase):
         self.assertEqual(s["turns"], 10)        # 3 + 1 + 4 + 2
         self.assertEqual(s["toolcalls"], 3)     # 2 + 1 + 0 + 0
         self.assertEqual(s["models"], 2)
+        # Decoded from the id: the ranking key is the (model, provider) route the
+        # Tokens tab groups on, not the opaque id Trae stored.
         self.assertEqual(s["top_model"],
-                         {"model_id": "agent_1__Model X_null", "sessions": 2})
+                         {"model": "Model X", "provider": None,
+                          "third_party": 0, "sessions": 2})
+        self.assertEqual(s["third_sessions"], 0)
+        self.assertEqual(s["third_models"], 0)
 
     def test_a_window_excludes_sessions_outside_it(self):
         s = self._summary(start_ts=WIN_START, end_ts=WIN_END)
@@ -184,7 +193,8 @@ class UsageSummaryTest(UsageBase):
         self.assertEqual(s["toolcalls"], 2)
         self.assertEqual(s["models"], 1)
         self.assertEqual(s["top_model"],
-                         {"model_id": "agent_1__Model X_null", "sessions": 1})
+                         {"model": "Model X", "provider": None,
+                          "third_party": 0, "sessions": 1})
 
     def test_a_stored_zero_is_reported_as_zero(self):
         """The reverse of the dash rule: `turns`/`toolcalls` are never NULL.
@@ -212,6 +222,140 @@ class UsageSummaryTest(UsageBase):
         s = self._summary(start_ts=EMPTY_START, end_ts=EMPTY_END)
         self.assertEqual(s["sessions"], 0)
         self.assertIsNone(s["top_model"])
+
+
+class ModelRouteTest(UsageBase):
+    """The decoded route is the Tokens tab's key; the raw id stays on the row.
+
+    Trae writes one opaque id per selection. The catalog embedded in it is the only
+    authority for what the name and channel mean, so these cases pin the decode
+    (longest match wins, no match stays unknown) and the two surfaces built on it:
+    the per-model credit estimate and the per-(session, selection) Usage ledger.
+    """
+
+    THIRD = "eeeeeeeeeeee5555"
+    THIRD_ID = "solo_agent_3_volcengine-plan_Model Z_2837387906"
+
+    def test_a_catalog_name_decodes_to_its_provider_and_marks_a_third_party_route(self):
+        self.conn.execute(
+            "INSERT INTO models(account, group_name, name, provider)"
+            " VALUES('acct-A','g','Model Z','volcengine-plan')")
+        self.conn.execute(
+            "INSERT INTO sessions(session_id, project_key, turns, toolcalls, created_ts)"
+            " VALUES(?,?,2,0,?)", (self.THIRD, "-p--p2-c", C_CREATED + 10_000))
+        self.conn.execute(
+            "INSERT INTO session_models(session_id, account, agent_label, model_id)"
+            " VALUES(?,?,?,?)", (self.THIRD, "acct-A", "solo_agent", self.THIRD_ID))
+        self.conn.commit()
+        db.decode_session_models(self.conn)
+        row = self.conn.execute(
+            "SELECT model, provider, third_party FROM session_models"
+            " WHERE session_id = ?", (self.THIRD,)).fetchone()
+        self.assertEqual((row["model"], row["provider"], row["third_party"]),
+                         ("Model Z", "volcengine-plan", 1))
+        self.assertEqual(db.route_label(row["provider"], row["third_party"]), "3P")
+        # The raw id is never overwritten: it is what Trae wrote.
+        self.assertEqual(
+            self.conn.execute("SELECT model_id FROM session_models WHERE session_id=?",
+                              (self.THIRD,)).fetchone()[0], self.THIRD_ID)
+
+    def test_an_id_with_no_catalog_match_reads_as_unknown_not_built_in(self):
+        db.decode_session_models(self.conn)
+        row = self.conn.execute(
+            "SELECT model, provider FROM session_models WHERE session_id = ?",
+            (MEASURED_A,)).fetchone()
+        self.assertEqual(row["model"], "Model X")
+        self.assertIsNone(row["provider"])
+        self.assertEqual(db.route_label(row["provider"], 0), "-")
+
+    def _session_in_the_first_drop(self, session_id):
+        """A session created inside the 1000 -> 940 interval, so it gets the drop.
+
+        Session A is created exactly at the earlier sample's timestamp and is
+        therefore already accounted for; the fixture needs one created *inside*
+        the interval for the split to have a subject.
+        """
+        self.conn.execute(
+            "INSERT INTO credit_events(source, ts, kind, remaining, generation)"
+            " VALUES('/logs/a.log',1700000200000,'balance',940.0,4)")
+        # Drop the later 500-credit sample: it would allocate a second, unrelated
+        # drop to a session this case is not about, and the point here is one
+        # interval's split.
+        self.conn.execute("DELETE FROM credit_events WHERE ts >= 1700001000000")
+        self.conn.execute(
+            "INSERT INTO sessions(session_id, project_key, turns, toolcalls, created_ts)"
+            " VALUES(?,?,2,0,1700000100000)", (session_id, "-p--p2-c"))
+        self.conn.commit()
+
+    def test_the_credit_estimate_is_per_route_and_names_the_share(self):
+        """The only measured spend allocated here is the 60-credit drop.
+
+        The interval holds one new session, whose selection is Model X. The parts
+        add up to the drop, and the unallocated remainder is not smeared over a
+        model that no selection names.
+        """
+        alloc = "ffffffffffff6666"
+        self._session_in_the_first_drop(alloc)
+        self.conn.execute(
+            "INSERT INTO session_models(session_id, account, agent_label, model_id)"
+            " VALUES(?,?,?,?)", (alloc, "acct-A", "agent", "agent_1__Model X_null"))
+        self.conn.commit()
+        db.decode_session_models(self.conn)
+        db.allocate_credits(self.conn)
+        rows = {r["model"]: dict(r) for r in db.q_model_credits(self.conn)}
+        self.assertEqual(rows["Model X"]["credits"], 60.0)
+        self.assertEqual(rows["Model X"]["sessions"], 3)   # A, C and the new one
+        self.assertEqual(rows["Model X"]["coverage"], 1.0)
+        self.assertIsNone(rows["Model Y"]["credits"])
+        self.assertIsNone(rows["Model Y"]["coverage"])
+        self.assertEqual(db.q_credit_summary(self.conn)["allocated"], 60.0)
+
+    def test_usage_rows_are_one_per_selection_and_sum_the_estimate(self):
+        """A session with two selections is two rows, not one merged row.
+
+        The Usage page is the only place both routes of one session are visible;
+        merging them would hide the third-party selection behind the built-in one.
+        """
+        alloc = "ffffffffffff6666"
+        self._session_in_the_first_drop(alloc)
+        self.conn.execute(
+            "INSERT INTO models(account, group_name, name, provider)"
+            " VALUES('acct-A','g','Model Z','volcengine-plan')")
+        self.conn.execute(
+            "INSERT INTO models(account, group_name, name, provider)"
+            " VALUES('acct-A','g','Model X','')")
+        self.conn.executemany(
+            "INSERT INTO session_models(session_id, account, agent_label, model_id)"
+            " VALUES(?,?,?,?)",
+            [(alloc, "acct-A", "agent", "agent_1__Model X_null"),
+             (alloc, "acct-A", "solo_agent",
+              "solo_agent_3_volcengine-plan_Model Z_1")])
+        self.conn.commit()
+        db.decode_session_models(self.conn)
+        db.allocate_credits(self.conn)
+        rows = [dict(r) for r in db.q_usage_rows(self.conn)
+                if r["session_id"] == alloc]
+        self.assertEqual({r["model"] for r in rows}, {"Model X", "Model Z"})
+        self.assertEqual({db.route_label(r["provider"], r["third_party"])
+                          for r in rows}, {"Built-in", "3P"})
+        # The session's interval share is split evenly between its selections.
+        self.assertEqual(sum(r["credits"] for r in rows), 60.0)
+
+    def test_the_model_drill_down_lists_sessions_of_that_route_only(self):
+        self.conn.execute(
+            "INSERT INTO models(account, group_name, name, provider)"
+            " VALUES('acct-A','g','Model Z','volcengine-plan')")
+        self.conn.execute(
+            "INSERT INTO session_models(session_id, account, agent_label, model_id)"
+            " VALUES(?,?,?,?)", (MEASURED_B, "acct-A", "solo_agent",
+                                 "solo_agent_3_volcengine-plan_Model Z_1"))
+        self.conn.commit()
+        db.decode_session_models(self.conn)
+        found = db.q_model_sessions(self.conn, "Model Z", "volcengine-plan")
+        self.assertEqual([r["session_id"] for r in found], [MEASURED_B])
+        totals = db.q_entity_totals(self.conn, model="Model Z",
+                                    provider="volcengine-plan")
+        self.assertEqual(totals["sessions"], 1)
 
 
 class CreditWindowTest(UsageBase):

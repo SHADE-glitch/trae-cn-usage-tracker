@@ -10,9 +10,11 @@ out or shown as a fake zero:
 - **Tools** counts tool calls per session. Trae writes a call as a snapshot git
   tag (``toolcall-<messageId>-<toolcallId>``) and names the tool nowhere
   readable, so this is a count, never a per-tool ranking.
-- **Tokens** holds credit balances. Trae logs no token count in plaintext — the
-  agent store is encrypted — so the slot aligned with cbut's Tokens tab carries
-  the one currency the log does write.
+- **Tokens** ranks model routes by an estimated credit spend, and keeps a
+  `tokens` column that is always `-` because Trae logs no token count in
+  plaintext — the agent store is encrypted. The estimate is a measured balance
+  drop split across the sessions in that interval; the tab says `est.` wherever
+  the number appears. Third-party routes carry an explicit `3P` tag.
 - **Usage** is per **session**, not per request: there is no per-request record
   on disk. The summary panels are session totals over the tab's own window and
   the list below them is that window's sessions, newest first.
@@ -31,6 +33,7 @@ instead of a traceback.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
 import time
@@ -80,25 +83,36 @@ def clip(text, width):
     return s if len(s) <= width else s[: width - 1] + "…"
 
 
+def provider_cell(value):
+    """The Provider column: the channel name for a 3P route, `-` for built-in.
+
+    The Route column already says `Built-in`; repeating it under Provider made two
+    adjacent columns carry one fact. An unknown provider is `-` too, and Route
+    distinguishes the two by saying `Built-in` or `-`.
+    """
+    if value == "":
+        return "-"
+    return db.provider_label(value)
+
+
+def credit_est(v):
+    """Two decimals for an estimated credit share, or ``-`` when there is none.
+
+    Measured balances keep ``db.credit_num`` (up to four decimals, no float
+    noise). An estimate split over turns is not precise to four decimals, and a
+    column of ``24.76118333`` reads as a measurement; two decimals says "about"
+    without pretending to more.
+    """
+    if v is None:
+        return "-"
+    return f"{v:,.2f}"
+
+
 def local_time(ms):
     """Local-time render of an epoch-ms value (query bounds stay in Unix ms)."""
     if not ms:
         return "-"
     return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _leader(rows, name_key, empty):
-    """A panel line for a windowed leaderboard's top row: name plus its count.
-
-    These queries filter in SQL, so an empty result means the window placed no
-    session carrying that label — not that none exists. The sentence says which,
-    because the two have different fixes and only the first belongs to the range
-    picker.
-    """
-    if not rows:
-        return empty
-    r = rows[0]
-    return f"{clip(r[name_key], 16)} ({db.count_n(r['sessions'], 's')})"
 
 
 # Range option list (values mirror tcut_db so the two stay in sync).
@@ -127,20 +141,27 @@ MCP_COLUMNS = ("server", "source", "path")
 # a row opens that session's own detail rather than a tool that does not exist.
 TOOLS_COLUMNS = ("session", "project", "calls", "messages", "first seen",
                  "last seen")
-# Tokens: the credit-balance series. This tab is aligned with cbut's Tokens slot,
-# not with its data — cbut counts tokens per model, Trae writes no token count
-# in plaintext at all, and the balance is the only currency the log records.
-# `spent>=` is a query-time lower bound between two samples, never a measurement.
-TOKENS_COLUMNS = ("time", "remaining", "spent≥", "generation", "source")
-# Usage: the window's sessions. Same shape cbut's request log has, one row per
-# session instead of per request, so it is the same query with a different
-# subject — `q_sessions` with a limit rather than a window-scoped ledger.
-USAGE_LOG_COLUMNS = ("when", "session", "project", "turns", "calls", "model")
+# Tokens: one row per decoded (model, provider) route. The credits column is the
+# estimate this index computes from measured balance drops; `tokens` is present
+# because cbut has it, and is always `-` because Trae writes no token count at all
+# (third-party routes included). `share` is the row's part of the estimated total,
+# not a share of a measured request count. Sorted by estimate, then sessions.
+TOKENS_COLUMNS = ("model", "provider", "route", "credits est.", "share",
+                  "sessions", "tokens", "last used")
+# Usage: one row per (session, recorded model selection) in the window. Trae keeps
+# only the current selection per session, so this is the finest ledger the disk
+# supports — still not a per-request one. `credits est.` is the same estimate the
+# Tokens tab ranks, shown for the selection that was in use.
+USAGE_LOG_COLUMNS = ("when", "session", "model", "route", "credits est.",
+                     "project", "agent", "turns", "calls", "provider")
 # The sessions behind one entity. The subject is in the screen title, so it is not
 # repeated in every row; the columns are the ones that read differently per session.
-ENTITY_COLUMNS = ("when", "session", "turns", "calls", "model", "intent")
-# kind -> the q_sessions filter it maps to.
-ENTITY_FILTERS = {"project": "project", "agent": "agent", "model": "model_id"}
+ENTITY_COLUMNS = ("when", "session", "agent", "turns", "calls", "model",
+                  "route", "credits est.", "intent")
+# kind -> the q_sessions filter it maps to. `model` filters on the decoded name
+# plus the provider held separately by the screen; the old raw `model_id` filter
+# is gone from the TUI because every model surface now reads the decoded route.
+ENTITY_FILTERS = {"project": "project", "agent": "agent", "model": "model"}
 ENTITY_LABELS = {"project": "Project", "agent": "Agent", "model": "Model"}
 
 
@@ -894,13 +915,14 @@ if HAVE_TEXTUAL:
                 learned = db.q_session_learned(conn, self.session_id)
                 topics = db.q_topics(conn, self.session_id)
                 models = db.q_session_models(conn, self.session_id)
+                credits = db.q_session_credits(conn, self.session_id)
             finally:
                 conn.close()
             body = self.query_one("#session-body")
             if row is None:
                 body.mount(Static("session not found", classes="sess-value"))
                 return
-            for label, value in self._summary_rows(row, models):
+            for label, value in self._summary_rows(row, models, credits):
                 body.mount(Horizontal(Static(label, classes="sess-label"),
                                       Static(value, classes="sess-value")))
             cap = self.app.DETAIL_LIMIT
@@ -910,25 +932,45 @@ if HAVE_TEXTUAL:
                              [f"{ts(t['ts'])}  {t['summary']}" for t in topics[:cap]])
 
         @staticmethod
-        def _summary_rows(row, models=()):
+        def _summary_rows(row, models=(), credits=()):
             """``(label, text)`` for a session's scalar fields, in reading order.
 
             NULL renders as "-" (never a fabricated 0). ``intent``/``outcome``
             are prose; they are absent when ``store_content`` is off. ``models``
-            is one line per agent label, because a session can carry two.
+            is one line per agent label, because a session can carry two. Each
+            selection is shown by its decoded name and route; the CLI's `show`
+            keeps the raw id on a second line, since that is what Trae wrote.
             """
             def when(v):
                 return "-" if not v else local_time(v)
+            claimed = {(c["agent_label"], c["model_id"]): c["credits"]
+                       for c in credits}
             rows = [
                 ("project", row["project"] or row["project_key"] or "-"),
                 ("agent", row["agent"] or "-"),
                 ("day", row["day"] or "-"),
             ]
             for m in models:
-                rows.append((f"model · {m['agent_label']}", m["model_id"]))
+                name = m["model"] or m["model_id"] or "-"
+                route = db.route_label(m["provider"], m["third_party"])
+                channel = db.provider_label(m["provider"])
+                # Built-in's provider label *is* its route label; print it once
+                # rather than as "Built-in · Built-in". A third-party row keeps
+                # both: the channel name and the short 3P tag.
+                if route == "-":
+                    detail = name
+                elif route == channel:
+                    detail = f"{name} · {route}"
+                else:
+                    detail = f"{name} · {channel} · {route}"
+                rows.append((f"model · {m['agent_label']}", detail))
+                rows.append((f"credits · {m['agent_label']}",
+                             credit_est(claimed.get(
+                                 (m["agent_label"], m["model_id"])))))
             if not models:
                 rows.append(("model", "-"))
             rows += [
+                ("tokens", "not recorded (Trae writes none, 3P included)"),
                 ("turns", fmt_n(row["turns"])),
                 ("tool calls", fmt_n(row["toolcalls"])),
                 ("span", f"{when(row['first_ts'])} → {when(row['last_ts'])}"),
@@ -966,10 +1008,14 @@ if HAVE_TEXTUAL:
         WIDE_TABLES = {"t-entity": (ENTITY_COLUMNS, "colnote-entity", 0)}
 
         def __init__(self, kind: str, value: str, start=None, end=None,
-                     window_label: str = ""):
+                     window_label: str = "", provider=None):
             super().__init__()
             self.kind = str(kind)
             self.value = str(value)
+            # A decoded model row is a (model, provider) route; the provider is
+            # carried separately so the header can name the channel and the query
+            # can narrow to it. Empty string means Trae's built-in route.
+            self.provider = provider
             # The window the row was read from. Without it this screen listed every
             # session the agent ever had while the tab above it printed a count for
             # the range — two numbers for one row, disagreeing on the same screen.
@@ -988,9 +1034,15 @@ if HAVE_TEXTUAL:
 
         def compose(self) -> ComposeResult:
             label = ENTITY_LABELS.get(self.kind, self.kind)
-            yield TopBar(f"{label} · {clip(self.value, 44)}")
+            name = self.value
+            if self.kind == "model" and self.provider is not None:
+                if self.provider == "":
+                    name += " · Built-in"
+                else:
+                    name += f" · {db.provider_label(self.provider)} · 3P"
+            yield TopBar(f"{label} · {clip(name, 44)}")
             with Vertical(id="entity-body"):
-                yield Static(f"[b]{label}[/b] · {self.value}"
+                yield Static(f"[b]{label}[/b] · {name}"
                              + (f" · {self.window_label}" if self.window_label else ""),
                              id="entity-title")
                 yield Static(id="entity-summary")
@@ -1039,19 +1091,40 @@ if HAVE_TEXTUAL:
             # only worth printing if they are the same set of rows the table shows.
             scope = {"start_ts": self.start, "end_ts": self.end,
                      ENTITY_FILTERS[self.kind]: self.value}
+            if self.kind == "model":
+                scope["provider"] = self.provider
             try:
-                found = db.q_sessions(conn, **scope)
+                if self.kind == "model":
+                    found = db.q_model_sessions(
+                        conn, self.value, self.provider,
+                        start_ts=self.start, end_ts=self.end)
+                else:
+                    found = db.q_sessions(conn, **scope)
                 totals = db.q_entity_totals(conn, **scope)
             except sqlite3.Error as exc:
                 self.app._report_query_error(exc)
                 return
             finally:
                 conn.close()
-            self.query_one("#entity-summary", Static).update(self._summary_line(totals))
-            rows = [[db.derived_mark(r["derived_ts"]) + ts(r["shown_ts"]),
-                     r["session_id"][:12], f"{r['turns']:,}",
-                     f"{r['toolcalls']:,}", r["model_id"] or "-",
-                     r["intent"] or "-"] for r in found]
+            summary = self._summary_line(totals)
+            if self.kind == "model":
+                estimated = sum((r["credits"] or 0) for r in found)
+                summary += (f" · {credit_est(estimated)} credits est."
+                            " (balance drop split by turns)")
+            self.query_one("#entity-summary", Static).update(summary)
+            if self.kind == "model":
+                route = db.route_label(self.provider, 1 if self.provider else 0)
+                rows = [[db.derived_mark(r["derived_ts"]) + ts(r["shown_ts"]),
+                         r["session_id"][:12], r["agent"] or "-",
+                         f"{r['turns']:,}", f"{r['toolcalls']:,}",
+                         self.value, route, credit_est(r["credits"]),
+                         r["intent"] or "-"] for r in found]
+            else:
+                rows = [[db.derived_mark(r["derived_ts"]) + ts(r["shown_ts"]),
+                         r["session_id"][:12], r["agent"] or "-",
+                         f"{r['turns']:,}", f"{r['toolcalls']:,}",
+                         r["model_id"] or "-", "-", "-",
+                         r["intent"] or "-"] for r in found]
             empty = (f"No sessions for this {self.kind} in {self.window_label}"
                      if self.window_label else
                      f"No sessions recorded for this {self.kind}")
@@ -1111,7 +1184,10 @@ if HAVE_TEXTUAL:
         #panel-usage-top, #panel-usage-runtime { margin: 0; }
         .panel-title { text-style: bold; color: $accent; }
         #usage-window, #usage-status { padding: 0; }
-        #dash-note, #usage-note { padding: 0 1; color: $text-muted; }
+        #dash-note, #usage-note, #tokens-note { padding: 0 1; color: $text-muted; height: auto; }
+        /* The Tokens page floats its panels above the table, like Usage. */
+        #tokens-box { height: 1fr; }
+        #tokens-box .summary-panels { height: auto; }
         /* The Usage page's table gets a floor of rows: the panels above it are
            capped and scroll, so without this the log can be squeezed to nothing
            on a short terminal. */
@@ -1280,9 +1356,12 @@ if HAVE_TEXTUAL:
                                 # cbut's Runtime panel counts completed/incomplete calls;
                                 # Trae records no call status, so this holds the balance
                                 # and the index's own freshness instead.
-                                Static("Credits · sync", classes="panel-title"),
+                                Static("Credits · routes · sync",
+                                       classes="panel-title"),
                                 Static(id="dash-credits-latest"),
                                 Static(id="dash-credits-spent"),
+                                Static(id="dash-credits-alloc"),
+                                Static(id="dash-credits-third"),
                                 Static(id="dash-sync-last"),
                                 Static(id="dash-sync-auto"),
                                 classes="usage-panel", id="panel-dash-runtime",
@@ -1308,8 +1387,31 @@ if HAVE_TEXTUAL:
                     yield Static(id="colnote-mcp", classes="col-note")
                     yield DataTable(id="t-mcp", zebra_stripes=True)
                 with TabPane("Tokens", id="tab-tokens"):
-                    yield Static(id="colnote-tokens", classes="col-note")
-                    yield DataTable(id="t-tokens", zebra_stripes=True)
+                    yield Vertical(
+                        Horizontal(
+                            Vertical(
+                                Static("Window / Models", classes="panel-title"),
+                                Static(id="tok-window"),
+                                Static(id="tok-models"),
+                                Static(id="tok-sessions"),
+                                Static(id="tok-third"),
+                                classes="usage-panel", id="panel-tok-window",
+                            ),
+                            Vertical(
+                                Static("Credits (est.)", classes="panel-title"),
+                                Static(id="tok-balance"),
+                                Static(id="tok-spent"),
+                                Static(id="tok-allocated"),
+                                Static(id="tok-unallocated"),
+                                classes="usage-panel", id="panel-tok-credits",
+                            ),
+                            id="tokens-panels", classes="summary-panels",
+                        ),
+                        Static(id="tokens-note"),
+                        Static(id="colnote-tokens", classes="col-note"),
+                        DataTable(id="t-tokens", zebra_stripes=True),
+                        id="tokens-box",
+                    )
                 with TabPane("Usage", id="tab-usage"):
                     yield Vertical(
                         Horizontal(
@@ -1328,16 +1430,17 @@ if HAVE_TEXTUAL:
                                 classes="usage-panel", id="panel-usage-activity",
                             ),
                             Vertical(
-                                Static("Top in window", classes="panel-title"),
-                                Static(id="sum-top-project"),
-                                Static(id="sum-top-agent"),
+                                Static("Models & routes", classes="panel-title"),
+                                Static(id="sum-models"),
+                                Static(id="sum-third"),
                                 Static(id="sum-top-model"),
                                 classes="usage-panel", id="panel-usage-top",
                             ),
                             Vertical(
-                                Static("Credits · sync", classes="panel-title"),
+                                Static("Credits (est.)", classes="panel-title"),
                                 Static(id="sum-credits"),
                                 Static(id="sum-credits-spent"),
+                                Static(id="sum-credits-alloc"),
                                 Static(id="usage-status"),
                                 classes="usage-panel", id="panel-usage-runtime",
                             ),
@@ -1421,25 +1524,91 @@ if HAVE_TEXTUAL:
             self._fill_wide("t-tools", rows, "No tool calls in this window",
                             key_kind="session")
 
-        def _fill_tokens(self, conn, start=None, end=None) -> None:
-            """Credit balances over the window — the slot cbut fills with tokens.
+        def _fill_tokens(self, conn=None, start=None, end=None) -> None:
+            """Model routes ranked by estimated credits — the Tokens slot.
 
-            Trae logs no token count in plaintext (the agent store is
-            encrypted), so this tab holds the one currency the credit log does
-            record. ``spent≥`` is a lower bound derived between two samples,
-            never a measured consumption, and the `≥` is on the column so the
-            table cannot be quoted without it.
+            Two facts shape this page. Trae writes **no token count at all**
+            (the agent store is encrypted), so the `tokens` column is present for
+            the cbut-shaped layout and can only read `-`; the note above the
+            table says why, including for third-party routes. The only
+            consumption-derived number on disk is the credit balance, sampled at
+            app start: each measured drop is split across the sessions created in
+            that interval by turn count, and every surface labels it `est.`.
             """
-            rows = [[
-                local_time(r["ts"]),
-                db.credit_num(r["remaining"]),
-                db.credit_num(r["spent_at_least"]),
-                r["generation"] if r["generation"] is not None else "-",
-                db.credit_log_label(r["source"]),
-            ] for r in db.q_credits(conn, start_ts=start, end_ts=end)]
-            self._fill_wide("t-tokens", rows,
-                            "No credit balance recorded in this window",
-                            key_index=1, key_kind="credit")
+            if not self._data_ready:
+                return
+            if start is None and end is None:
+                start, end = self._bounds_for("tab-tokens")
+            own = conn is None
+            if own:
+                try:
+                    conn = db.open_db(self.db_path, readonly=True)
+                except sqlite3.Error as exc:
+                    self._report_query_error(exc)
+                    return
+            try:
+                summary = db.q_usage_summary(conn, start, end)
+                credits = db.q_credit_summary(conn, start, end)
+                models = db.q_model_credits(conn, start, end)
+                self._render_tokens_panels(summary, credits)
+                rows = []
+                for r in models:
+                    share = (f"{r['coverage'] * 100:.0f}%"
+                             if r["coverage"] is not None else "-")
+                    last = (db.derived_mark(r["derived_ts"]) + ts(r["last_used"])
+                            if r["last_used"] else "-")
+                    rows.append([
+                        r["model"] or "-",
+                        provider_cell(r["provider"]),
+                        db.route_label(r["provider"], r["third_party"]),
+                        credit_est(r["credits"]),
+                        share,
+                        f"{r['sessions']:,}",
+                        # Trae writes no token count, here or on a 3P route.
+                        "-",
+                        last,
+                    ])
+                key_rows = [[json.dumps([r["model"], r["provider"]])]
+                            for r in models]
+                self._fill_wide(
+                    "t-tokens", rows,
+                    "No model selections in this window — widen the range above.",
+                    key_index=0, key_kind="model", key_rows=key_rows)
+            except sqlite3.Error as exc:
+                self._report_query_error(exc)
+                self.query_one("#tokens-note", Static).update(
+                    f"tokens query failed ({exc}); run: tcut sync")
+            finally:
+                if own:
+                    conn.close()
+            self._apply_responsive_layout()
+
+        def _render_tokens_panels(self, s: dict, c: dict) -> None:
+            """The two panels above the model table, plus the one honest note."""
+            self._put_panel("#tok-window", "Window",
+                            db.window_label(self._range_of("tab-tokens")))
+            self._put_panel("#tok-models", "Models", f"{s['models']:,}")
+            self._put_panel("#tok-sessions", "Sessions", f"{s['sessions']:,}")
+            self._put_panel("#tok-third", "3P sessions",
+                            f"{s['third_sessions']:,}")
+            self._put_panel("#tok-balance", "Balance",
+                            db.credit_num(c["balance"]))
+            self._put_panel("#tok-spent", "Spent ≥", db.credit_num(c["spent"]))
+            self._put_panel("#tok-allocated", "Allocated",
+                            credit_est(c["allocated"]))
+            self._put_panel("#tok-unallocated", "Unallocated",
+                            credit_est(c["unallocated"]))
+            note = ("Credits are estimated: each measured balance drop is split"
+                    " across the sessions created in its interval by turn count"
+                    " (est.), and a session that selected two models splits its"
+                    " share. `share` is of the allocated estimate, not of all"
+                    " spend; Unallocated is spend no recorded selection can claim."
+                    " Trae CN writes no token counts — third-party routes"
+                    " included — so the tokens column cannot be filled.")
+            if c["grants"]:
+                note += (f" {db.count_n(c['grants'], 'balance rise')}"
+                         " counted as a grant, not negative spend.")
+            self.query_one("#tokens-note", Static).update(note)
 
         def _fill_agents(self, conn, start=None, end=None) -> None:
             rows = [[r["agent"], r["kind"] or "-",
@@ -1788,10 +1957,8 @@ if HAVE_TEXTUAL:
                     return
             try:
                 s = db.q_usage_summary(conn, start, end)
-                credits = db.q_credits(conn, start_ts=start, end_ts=end)
-                project = db.q_top_projects(conn, 1, start, end)
-                agent = db.q_top_agents(conn, 1, start, end)
-                self._render_usage_panels(s, credits, project, agent)
+                credits = db.q_credit_summary(conn, start, end)
+                self._render_usage_panels(s, credits)
                 self._fill_usage_logs(conn, start, end)
             except sqlite3.Error as exc:
                 # e.g. an un-migrated DB where a newer column is missing.
@@ -1804,7 +1971,7 @@ if HAVE_TEXTUAL:
                     conn.close()
             self._apply_responsive_layout()
 
-        def _render_usage_panels(self, s: dict, credits, project, agent) -> None:
+        def _render_usage_panels(self, s: dict, credits: dict) -> None:
             top = s.get("top_model") or {}
             self._put_panel("#sum-sessions", "Sessions", f"{s['sessions']:,}")
             self._put_panel("#sum-projects", "Projects",
@@ -1813,23 +1980,28 @@ if HAVE_TEXTUAL:
             self._put_panel("#sum-calls", "Tool calls", f"{s['toolcalls']:,}")
             self._put_panel("#sum-dated", "Unmeasured",
                             db.count_n(s["unmeasured"], "session"))
-            # A leaderboard whose top row is a label prints the label's own count
-            # of sessions, so "Top in window" is readable without the table below.
-            self._put_panel("#sum-top-project", "Project",
-                            _leader(project, "project_key", "no project recorded"))
-            self._put_panel("#sum-top-agent", "Agent",
-                            _leader(agent, "agent", "no agent named"))
-            self._put_panel("#sum-top-model", "Model",
-                            top.get("model_id") or "no selection recorded")
-            self._put_panel("#sum-credits", "Latest balance",
-                            db.credit_num(credits[0]["remaining"] if credits
-                                          else None))
-            self._put_panel("#sum-credits-spent", "Spent at least",
-                            db.credit_num(sum(c["spent_at_least"] or 0
-                                              for c in credits)))
-            note = (f"Per session, not per request — Trae CN records no"
-                    f" per-request line ({db.count_n(s['sessions'], 'session')}"
-                    f" in this window)")
+            self._put_panel("#sum-models", "Models", f"{s['models']:,}")
+            self._put_panel("#sum-third", "3P sessions",
+                            f"{s['third_sessions']:,}")
+            # The top row is a route now, so it carries the same 3P tag the table
+            # does; a bare model name would hide which channel it went through.
+            label = top.get("model") or "no selection recorded"
+            if top.get("third_party"):
+                label += " · 3P"
+            elif top.get("model"):
+                label += " · Built-in"
+            self._put_panel("#sum-top-model", "Top model", label)
+            self._put_panel("#sum-credits", "Balance",
+                            db.credit_num(credits["balance"]))
+            self._put_panel("#sum-credits-spent", "Spent ≥",
+                            db.credit_num(credits["spent"]))
+            self._put_panel("#sum-credits-alloc", "Allocated",
+                            credit_est(credits["allocated"]))
+            note = (f"Per session and model selection, not per request — Trae CN"
+                    f" records no per-request line ({db.count_n(s['sessions'], 'session')}"
+                    f" in this window, {db.count_n(s['models'], 'model')})."
+                    " Credits are estimated from measured balance drops (est.);"
+                    " tokens are not recorded on disk, including for 3P routes.")
             if s["unmeasured"]:
                 # Same disclosure the Dashboard makes, sized to its population:
                 # the `~` on any time in the table below refers to exactly these.
@@ -1838,16 +2010,26 @@ if HAVE_TEXTUAL:
             self.query_one("#usage-note", Static).update(note)
 
         def _fill_usage_logs(self, conn, start, end) -> None:
-            """The window's sessions, newest first — this page's "log"."""
+            """The window's (session, model selection) rows, newest first."""
+            found = db.q_usage_rows(conn, limit=self.USAGE_LOG_LIMIT,
+                                    start_ts=start, end_ts=end)
             rows = [[
                 f"{db.derived_mark(r['derived_ts'])}{ts(r['shown_ts'])}",
-                r["session_id"], r["project"] or r["project_key"] or "-",
-                f"{r['turns']:,}", f"{r['toolcalls']:,}", r["model_id"] or "-",
-            ] for r in db.q_sessions(conn, limit=self.USAGE_LOG_LIMIT,
-                                     start_ts=start, end_ts=end)]
-            self._fill_wide("t-usage", rows,
-                            "No sessions in this window — widen the range above.",
-                            key_index=1, key_kind="session")
+                r["session_id"],
+                r["model"] or r["model_id"] or "-",
+                db.route_label(r["provider"], r["third_party"]),
+                credit_est(r["credits"]),
+                r["project"] or r["project_key"] or "-",
+                r["session_agent"] or "-",
+                f"{r['turns']:,}", f"{r['toolcalls']:,}",
+                provider_cell(r["provider"]),
+            ] for r in found]
+            self._fill_wide(
+                "t-usage", rows,
+                "No sessions in this window — widen the range above.",
+                key_index=(0, 1, 2), key_kind="session",
+                key_rows=[[r["session_id"], r["agent_label"], r["model_id"]]
+                          for r in found])
 
         # --- Dashboard page ------------------------------------------------
 
@@ -1871,7 +2053,7 @@ if HAVE_TEXTUAL:
                 projects = db.q_top_projects(conn, self.DASH_TOP, start, end)
                 agents = db.q_top_agents(conn, self.DASH_TOP, start, end)
                 models = db.q_top_models(conn, self.DASH_TOP, start, end)
-                credits = db.q_credits(conn, start_ts=start, end_ts=end)
+                credits = db.q_credit_summary(conn, start, end)
             except sqlite3.Error as e:
                 self.query_one("#dash-note", Static).update(
                     f"dashboard query failed ({e}); run: tcut sync")
@@ -1898,6 +2080,8 @@ if HAVE_TEXTUAL:
             note = ("No sessions in this window — widen the range above."
                     if not (kpi["sessions"] or kpi["turns"] or kpi["toolcalls"])
                     else "Range: the top bar · this tab keeps its own window")
+            note += (" · credits are estimated from measured balance drops (est.);"
+                     " Trae writes no token counts")
             if kpi["unmeasured"]:
                 # One place that says what the `~` in every list means, sized to the
                 # population it marks: Trae left these sessions with no measured time.
@@ -1917,19 +2101,24 @@ if HAVE_TEXTUAL:
                 self.query_one("#dash-top-models", Static).update(
                     "no model selection recorded" if all_time else blank)
                 return
-            lines = [f"{i}. {clip(r['model_id'], 24):<24}"
-                     f"{db.count_n(r['sessions'], 'session'):>12}"
+            lines = [f"{i}. {clip(r['model'] or '-', 21):<21}"
+                     f"{'3P' if r['third_party'] else '':>3}"
+                     f"{db.count_n(r['sessions'], 'session'):>9}"
                      for i, r in enumerate(top, 1)]
             self.query_one("#dash-top-models", Static).update("\n".join(lines))
 
-        def _render_dashboard_credits(self, credits) -> None:
-            """Balance level, spend lower bound, and how fresh the index is."""
-            latest = credits[0]["remaining"] if credits else None
-            spent = sum(c["spent_at_least"] or 0 for c in credits)
-            self._put_panel("#dash-credits-latest", "Latest balance",
+        def _render_dashboard_credits(self, credits: dict) -> None:
+            """Balance, spend bound, the estimate's coverage, and route mix."""
+            latest = credits["balance"]
+            spent = credits["spent"]
+            self._put_panel("#dash-credits-latest", "Balance",
                             db.credit_num(latest))
-            self._put_panel("#dash-credits-spent", "Spent at least",
+            self._put_panel("#dash-credits-spent", "Spent ≥",
                             db.credit_num(spent))
+            self._put_panel("#dash-credits-alloc", "Allocated",
+                            credit_est(credits["allocated"]))
+            self._put_panel("#dash-credits-third", "3P sessions",
+                            f"{credits['third_sessions']:,}")
             # Labelled "session sync" because it is the app's own action, not the
             # file's history: a database the CLI indexed a minute ago legitimately
             # reads "-" here, and "Last sync" would make that look like a failure.
@@ -2117,7 +2306,20 @@ if HAVE_TEXTUAL:
             if not rest:
                 return
             if kind == "session":
-                self.push_screen(SessionScreen(rest))
+                # Usage rows are one per (session, selection), so their key carries
+                # the selection after the id to stay unique. The detail screen is
+                # still the session's.
+                self.push_screen(SessionScreen(rest.split("\t")[0]))
+            elif kind == "model":
+                try:
+                    model, provider = json.loads(rest)
+                except (ValueError, TypeError):
+                    return
+                pane = self.query_one(TabbedContent).active
+                start, end = self._bounds_for(pane)
+                self.push_screen(EntityScreen(
+                    "model", model or "-", start, end,
+                    db.window_label(self._range_of(pane)), provider=provider))
             elif kind in ENTITY_FILTERS:
                 # Inherit the tab's own window, so the list opening under a count is
                 # a count of the same thing, and its heading says which range that was.
@@ -2131,12 +2333,11 @@ if HAVE_TEXTUAL:
                     + self.NO_DETAIL_NOTE.get(kind, f"usage per {kind}"),
                     severity="warning")
 
-        # Key kinds with no drill-down behind them, each with the reason in the
-        # reader's terms — an inventory row has no history, and a credit sample
-        # is a balance level rather than a per-request ledger.
+        # Key kinds with no drill-down behind them, with the reason in the
+        # reader's terms. The inventory is all Trae records for a skill, plugin or
+        # MCP server; there is no per-install usage line to open.
         NO_DETAIL_NOTE = {
             "inv": "Trae CN records no usage per skill, plugin or MCP server",
-            "credit": "a credit sample is a balance level, not a request",
         }
 
         # --- R / S shortcuts ------------------------------------------------

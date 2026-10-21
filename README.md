@@ -51,7 +51,7 @@
 - 📜 **Full history, instantly** — backfills every session already on disk; only new bytes after that.
 - 🪶 **Passive & read-only** — no hook, no plugin, no Trae source changes. Trae's own directories are opened for reading and hashed byte-identical afterwards.
 - 🗃️ **One local SQLite file** — no network, no upload, no telemetry.
-- 💳 **Honest about the two gaps** — the slot other trackers fill with model tokens is filled here with **credit balance samples**, and every panel that has no data source says so in words instead of drawing zeros.
+- 💳 **Honest about the two gaps** — the slot other trackers fill with model tokens is filled here with a **per-route credit estimate** (marked `est.`, with `3P` routes tagged); the token column stays blank and says why, and every panel that has no data source says so in words instead of drawing zeros.
 - 🧰 **Tool calls counted per session** — Trae's snapshot repositories name a call by id and never by name, so the Tools tab aggregates ids into sessions rather than inventing a tool it cannot read.
 - 📅 **Calendar-day windows, per tab** — the top-bar range (Today / 2 days / 3 days / 7 days / 14 days / 30 days / All time) is kept **per tab**, so changing one never moves another. Entity tabs default to **7 days**, the Dashboard and the Tokens / Usage pages to **7 days**, and Skills, Plugins and MCP are always all-time. Windows are whole local calendar days (00:00 → now), never "now minus N hours".
 - 🔎 **Two-level drill-down** — <kbd>Enter</kbd> or double-click a row on Tools or Agents to open that session's detail screen: its intent, its actions, what it learned, its topics, the model it selected and its credit window.
@@ -120,18 +120,18 @@ and the selector is hidden there. A window only changes the **counts**, never th
 
 | | Tab | What it shows |
 |---|-----|---------------|
-| 🧭 | **Dashboard** | usage KPIs (sessions, projects, turns, tool calls, prompts, agents, skills, plugins, MCP), the installed-inventory counts, Top 5 projects / agents / models, a per-day activity sparkline, and a `Credits · sync` panel with the latest balance and the spend lower bound |
+| 🧭 | **Dashboard** | usage KPIs (sessions, projects, turns, tool calls, prompts, agents, skills, plugins, MCP), the installed-inventory counts, Top 5 projects / agents / models (3P tagged), a per-day activity sparkline, and a `Credits · routes · sync` panel with the balance, the spend lower bound, the estimate's allocated / unallocated parts, and 3P sessions |
 | 🧰 | **Tools** | tool calls **per session** — id-derived counts with the session's first and last call. A count, not a per-tool name: see [Credits vs tokens](#-credits-vs-tokens) |
 | 🎯 | **Skills** | the installed skill inventory. All-time: Trae records no per-skill invocation |
 | 🤖 | **Agents** | installed agents, and how many sessions in the window name one |
 | 🧩 | **Plugins** | the installed plugin inventory, with version. All-time |
 | 🔌 | **MCP** | the installed MCP server inventory. All-time |
-| 🔢 | **Tokens** | the **credit balance samples** Trae logs at app start, with the derived `spent ≥` lower bound. This is the slot `cbut` fills with model tokens; Trae writes none |
-| 📊 | **Usage** | summary panels plus one row **per session** — when, session, project, turns, calls, model |
+| 🔢 | **Tokens** | **model routes ranked by estimated credits** — model, provider, `Built-in` / `3P`, `credits est.`, share, sessions, last used. The token column stays `-` because Trae writes no token count (third-party routes included) |
+| 📊 | **Usage** | summary panels plus one row **per (session, model selection)** — when, session, model, route, credit estimate, project, turns, calls |
 
 <kbd>Enter</kbd> (or a double-click) opens the **drill-down** for a session row on Tools or
-Usage, and for an agent row on Agents. The three inventory tabs and the Tokens tab have nothing
-behind a row, and they say that in a notification rather than opening an empty screen.
+Usage, an agent row on Agents, or a model-route row on Tokens. The three inventory tabs have
+nothing behind a row, and they say that in a notification rather than opening an empty screen.
 
 Three rules hold across every table, and they exist because the alternative reads as a fact:
 
@@ -157,11 +157,21 @@ measured on this machine rather than assumed:
 | Axis | Trae CN reports | Does not report |
 |---|---|---|
 | 💳 **credits** | a **balance level** sampled at app start in the renderer log | any per-request spend — a sample is a level, never a delta, and a fetch Trae declined is stored with no number at all |
-| 🔢 **tokens** | nothing, anywhere on disk | — |
+| 🔢 **tokens** | nothing, anywhere on disk (third-party routes included) | — |
 
-So the Tokens slot carries credits rather than tokens, and the Usage page aggregates by session
-rather than by request. Neither number is derived from the other, and neither is invented:
+The Tokens tab therefore does not list raw balances. It lists a **per-route estimate**: the drop
+between two balance samples is the only measured spend, and the indexer splits it across the
+sessions created inside that interval by turn count. A session that selected two models splits
+its share evenly. Every row is marked `est.`, the parts add up to the drop, and a share no
+recorded selection can claim is reported separately as `Unallocated` rather than smeared over a
+model. The `share` column is a share of the **allocated** estimate, not of all spend — otherwise
+92% would read as "92% of the credits" rather than "92% of what could be placed".
 
+- **The route comes from the id's shape, not a guess.** `...__Model_null` is Trae's own route;
+  an id that carries a channel and a trailing id (e.g.
+  `solo_agent_3_volcengine-plan_..._2837387906`) is third-party. The `Route` column says
+  `Built-in` / `3P`, and `Provider` names the channel only for 3P. The catalog supplies the name;
+  it cannot turn a `_null` selection into 3P.
 - **`spent ≥` is a lower bound, computed at query time.** It is the drop between a balance
   sample and the one before it. Because a daily grant also lands between samples, the true spend
   over any interval can be higher — which is exactly why the column is named `spent ≥` and never
@@ -169,6 +179,10 @@ rather than by request. Neither number is derived from the other, and neither is
 - **A declined fetch is not a `0`.** Two of the twelve samples here are fetches Trae did not
   answer; they are stored as no-number and left out of the series rather than turning a missing
   balance into a drop.
+- **The token column cannot be filled.** Quoted token keys (`prompt_tokens`, `rawUsage`, …) were
+  searched across `~/.trae-cn` and `~/.config/Trae CN` with zero hits; the agent database is
+  encrypted and the usage endpoints appear in the log as a URL plus a status code. Third-party
+  routes run through the same host and write no token count either.
 - **The tool-call ids are counts, not names.** `toolcall-<messageId>-<toolcallId>` is the whole
   tag. The Tools tab aggregates them per session, which is the most the tag supports.
 
@@ -297,7 +311,7 @@ database.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 254 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 261 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual` installed —
@@ -310,11 +324,11 @@ the import allowlist that keeps it that way).
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_sync.py` | 55 | the source readers (session memory JSONL, topic lines, memory prose, snapshot git tags, the agent `state.vscdb`, the inventory trees, the renderer log), incremental vs `--full` re-sync, the `models` composite key, credential-sentinel proof, unparsed accounting |
-| `test_tui.py` | 31 | tab wiring and report shapes through Textual's own `run_test` harness, per-tab ranges, the column plan, empty states, the responsive layout, and the status line as it is actually rendered |
+| `test_tui.py` | 33 | tab wiring and report shapes through Textual's own `run_test` harness, per-tab ranges, the column plan, empty states, the responsive layout, the status line as it is actually rendered, and the Tokens route table's `3P` / token / estimate cells with their drill-down |
 | `test_stats.py` | 38 | the headless CLI end to end: a real `main([...])` per subcommand, `--db` before and after, `export` / `inventory` / `show` / `health`, `backup`→`restore`, the generated `format` surface, and the empty-state notices |
 | `test_config.py` | 21 | the settings layer: defaults against the TUI's own constants, file, environment precedence and bounds, a broken file that names its path, and every knob a renderer actually reads |
 | `test_maintenance_docs.py` | 20 | the generated format doc cannot drift from the code, every maintenance asset is reachable from the router, and no document may state a CI version the workflow does not run |
-| `test_usage.py` | 14 | the per-session tool-call aggregation and its window, the Usage summary panels' totals, and the credit series' `spent ≥` lower bound |
+| `test_usage.py` | 19 | the per-session tool-call aggregation and its window, the Usage summary panels' totals, the credit series' `spent ≥` lower bound, and the v5 decode: built-in vs 3P, per-route credit allocation, and one Usage row per model selection |
 | `test_snapshots.py` | 14 | automatic snapshots before destructive steps, listing, restore, retention |
 | `test_privacy.py` | 11 | the import allowlist plus the calls that bypass it (`__import__` / `eval` / `import_module`), a fingerprint proving Trae's own tree is untouched, the `store_content` sentinel scan across every text column, and the model-credential scan |
 | `test_format_registry.py` | 10 | the Trae CN format registry and the parser agree, both directions |
@@ -359,8 +373,9 @@ disagree.
 ## ⚠️ Limitations & roadmap
 
 - 🔢 **No tokens, ever, from this source.** Not a gap in the reader: see [Credits vs
-  tokens](#-credits-vs-tokens). The Tokens tab carries credits so the slot is not blank, and
-  the note above the table says what the number is.
+  tokens](#-credits-vs-tokens). The Tokens tab keeps a token column for the `cbut`-shaped layout
+  and leaves it blank on purpose; the note above the table says why, and what the
+  credit estimate beside it does and does not measure.
 - 🧰 **Tools cannot be ranked by name.** Only the per-session count is real; a per-tool table
   would require reading the encrypted agent database.
 - 🎯 **Skills, Plugins and MCP are inventory, not usage.** Trae records no per-entity

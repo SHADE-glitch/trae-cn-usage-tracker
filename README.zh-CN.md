@@ -50,7 +50,7 @@
 - 📜 **全量历史，一次建好** —— 把盘上已有的每个会话都回填进来，之后只索引新增字节。
 - 🪶 **被动且只读** —— 不装 hook、不装插件、不改 Trae 源文件。Trae 自己的目录只被读取，索引跑完后逐字节哈希一致。
 - 🗃️ **一个本地 SQLite 文件** —— 不联网、不上传、无遥测。
-- 💳 **对两处空白如实说明** —— 别的工具用模型 token 填的那个槽位，这里用**credit 余额采样**填；没有数据源的面板用文字说明，而不是画一排零。
+- 💳 **对两处空白如实说明** —— 别的工具用模型 token 填的那个槽位，这里用**按模型路由分摊的 credit 估算**填，并明确标 `est.` 与 `3P`；token 列留白并说明原因，没有数据源的面板用文字说明，而不是画一排零。
 - 🧰 **工具调用按会话计数** —— Trae 的快照仓库只用 id 标记一次调用，从不写工具名，所以 Tools 页把 id 聚合成会话，而不是编造一个读不到的工具名。
 - 📅 **按自然日分窗，按 tab 独立** —— 顶栏范围（今天 / 2 天 / 3 天 / 7 天 / 14 天 / 30 天 / 全部）是**按 tab 保存**的，改一个不会动另一个。实体页默认 **7 天**，Dashboard 与 Tokens / Usage 页默认 **7 天**，Skills、Plugins、MCP 恒为全量。窗口是本地自然日（00:00 → 现在），不是"现在往前 N 小时"。
 - 🔎 **两级下钻** —— 在 Tools 或 Usage 的会话行、Agents 的 agent 行上按 <kbd>Enter</kbd> 或双击，打开该会话的详情屏：intent、actions、学到的东西、topics、选中的模型与它的 credit 区间。
@@ -117,17 +117,17 @@ Usage 默认 **7 天**；Skills、Plugins、MCP 完全没有可用时间戳，�
 
 | | Tab | 展示什么 |
 |---|-----|---------|
-| 🧭 | **Dashboard** | 用量 KPI（会话、项目、turn、工具调用、输入、agent、skills、plugins、MCP）、已安装清单计数、Top 5 项目 / agent / 模型、按天的活动曲线，以及 `Credits · sync` 面板（最新余额与消耗下界） |
+| 🧭 | **Dashboard** | 用量 KPI（会话、项目、turn、工具调用、输入、agent、skills、plugins、MCP）、已安装清单计数、Top 5 项目 / agent / 模型（3P 带标记）、按天的活动曲线，以及 `Credits · routes · sync` 面板（余额、消耗下界、估算中的已分配 / 未分配、3P 会话） |
 | 🧰 | **Tools** | **按会话**的工具调用 —— 从 id 推出来的计数，附该会话首次与末次调用。是计数，不是工具名：见 [Credits 与 tokens](#-credits-与-tokens) |
 | 🎯 | **Skills** | 已安装 skill 清单。全量：Trae 不记录逐 skill 的调用 |
 | 🤖 | **Agents** | 已安装的 agent，以及窗口内有多少会话点名了它 |
 | 🧩 | **Plugins** | 已安装 plugin 清单，带版本号。全量 |
 | 🔌 | **MCP** | 已安装 MCP server 清单。全量 |
-| 🔢 | **Tokens** | Trae 启动时写下的 **credit 余额采样**，以及由此推导的 `spent ≥` 下界。这个槽位在 `cbut` 里放的是模型 token；Trae 一个都不写 |
-| 📊 | **Usage** | 摘要面板 + 每会话一行的日志 —— 时间、会话、项目、turn、调用、模型 |
+| 🔢 | **Tokens** | **按模型路由**的 credit 估算榜：模型、渠道、`Built-in` / `3P`、`credits est.`、份额、会话数与最后使用。token 列如实留 `-`，因为 Trae 不写 token（第三方路由也不写） |
+| 📊 | **Usage** | 摘要面板 + 每 **（会话, 模型选择）** 一行的日志 —— 时间、会话、模型、路由、credits 估算、项目、turn、调用 |
 
-在 Tools / Usage 的会话行或 Agents 的 agent 行上按 <kbd>Enter</kbd>（或双击）进入**下钻**。三个清单页
-和 Tokens 页的行后面没有内容，它们会弹一条通知说明，而不是打开一个空屏。
+在 Tools / Usage 的会话行、Agents 的 agent 行或 Tokens 的模型路由行上按 <kbd>Enter</kbd>（或双击）进入
+**下钻**。三个清单页没有下钻内容，会弹一条通知说明，而不是打开一个空屏。
 
 三条规则贯穿所有表格，它们存在是因为反面会被读成事实：
 
@@ -148,15 +148,23 @@ Usage 默认 **7 天**；Skills、Plugins、MCP 完全没有可用时间戳，�
 | 轴 | Trae CN 报告什么 | 不报告什么 |
 |---|---|---|
 | 💳 **credits** | renderer log 里启动时采到的**余额档位** | 任何逐请求消耗 —— 采样是档位不是增量，而 Trae 拒绝应答的那次抓取在库里根本没有数字 |
-| 🔢 **tokens** | 盘上什么都没有 | —— |
+| 🔢 **tokens** | 盘上什么都没有（第三方路由也一样） | —— |
 
-所以 Tokens 槽位放的是 credits 而不是 tokens，Usage 页按会话而不是按请求聚合。两个数字都不从另一个
-推导，也都不凭空生成：
+Tokens 页因此不列原始余额，而是列**按模型路由的估算**：两次余额采样之间的落差是唯一实测的消耗量，
+索引器把它按该区间内新建会话的 turn 数分摊给这些会话选中的模型；一个会话选了两个模型就均分。每一行
+都标 `est.`，各行之和对得上落差，对不上任何选择的部分单独记成 `Unallocated`，绝不摊到某个模型头上。
+`share` 是**已分配**估算里的占比，不是全部消耗的占比 —— 否则 92% 会被读成"花了九成 credit"。
 
-- **`spent ≥` 是查询时算出的下界。** 它等于本次余额采样与上一次之间的落差。由于两次采样之间可能
-  正好落了一笔每日赠送，真实消耗只会更高 —— 这正是该列叫 `spent ≥`、且永远不被当作实测消耗的原因。
+- **路由来自 id 的形状，不是猜的。** `...__Model_null` 是 Trae 自己的路由；带渠道与尾部 id 的
+  （如 `solo_agent_3_volcengine-plan_..._2837387906`）是第三方。`Route` 列写 `Built-in` / `3P`，
+  `Provider` 列只在 3P 时给渠道名。模型目录只负责把名字解出来，不能把一个 `_null` 选择变成 3P。
+- **`spent ≥` 仍然是下界。** 它等于本次余额采样与上一次之间的落差；两次采样之间可能正好落了一笔
+  每日赠送，真实消耗只会更高。
 - **被拒绝的抓取不是 `0`。** 这里十二次采样里有两次 Trae 没有应答；它们存成"无数值"并被排除在
   序列之外，而不是把一次缺失的余额变成一次落差。
+- **token 列不填，是因为没有源。** `~/.trae-cn` 与 `~/.config/Trae CN` 下按带引号的 token 键搜过，
+  零命中；agent 库是加密的，日志里的 usage 接口只有 URL 加状态码。第三方路由走的是同一个宿主，
+  同样不落 token。
 - **工具调用 id 是计数，不是名字。** `toolcall-<messageId>-<toolcallId>` 就是 tag 的全部内容。
   Tools 页按会话聚合，这是这个 tag 能支撑的上限。
 
@@ -277,7 +285,7 @@ SQLite**。设置 `store_content = false` 后保留元数据并删除全部这�
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 254 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 261 tests ... OK
 ```
 
 测试套件是纯 `unittest`（`pytest` 也能发现它们）。其中两个需要装 `textual`：`test_tui.py`，以及
@@ -290,10 +298,10 @@ python3 -m unittest discover -s scripts/tests     # Ran 254 tests ... OK
 |---|---:|---|
 | `test_sync.py` | 55 | 各个源读取器（会话 memory JSONL、主题行、记忆散文、快照 git tag、agent 的 `state.vscdb`、清单目录树、renderer log）、增量与 `--full` 重建、`models` 复合主键、凭证哨兵证明、unparsed 记账 |
 | `test_stats.py` | 38 | 无头 CLI 端到端：每个子命令真实 `main([...])`、`--db` 放前后、`export` / `inventory` / `show` / `health`、`backup`→`restore`、生成的 `format` 面、空态提示 |
-| `test_tui.py` | 31 | 通过 Textual 自己的 `run_test` 测试 tab 接线与报表形状、按 tab 的范围、列计划、空态、响应式布局，以及状态行**实际渲染**出来的样子 |
+| `test_tui.py` | 33 | 通过 Textual 自己的 `run_test` 测试 tab 接线与报表形状、按 tab 的范围、列计划、空态、响应式布局、状态行**实际渲染**出来的样子，以及 Tokens 路由表的 `3P` / token / 估算单元格与下钻 |
 | `test_config.py` | 21 | 设置层：默认值与 TUI 自身常量对齐、文件、环境变量优先级与边界、坏掉的配置文件报出路径，以及每个旋钮真的被某个渲染器读到 |
 | `test_maintenance_docs.py` | 20 | 生成的 format 文档不能与代码漂移、维护资产都能从路由页到达、任何文档都不得声称 workflow 没跑的 CI 版本 |
-| `test_usage.py` | 14 | 按会话的工具调用聚合及其窗口、Usage 摘要面板的合计、credit 序列的 `spent ≥` 下界 |
+| `test_usage.py` | 19 | 按会话的工具调用聚合及其窗口、Usage 摘要面板的合计、credit 序列的 `spent ≥` 下界，以及 v5 解码：内置 / 3P、按路由分摊 credit、每个模型选择一行 Usage |
 | `test_snapshots.py` | 14 | 破坏性步骤前的自动快照、列出、恢复、保留策略 |
 | `test_privacy.py` | 11 | import 白名单以及绕过它的调用（`__import__` / `eval` / `import_module`）、证明 Trae 自己的目录树未被写入的指纹、`store_content` 哨兵扫描每一列文本、模型凭证扫描 |
 | `test_format_registry.py` | 10 | Trae CN 格式登记表与解析器双向一致 |
@@ -335,7 +343,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 254 tests ... OK
 ## ⚠️ 限制与路线图
 
 - 🔢 **这个源永远给不出 token。** 不是读取器的缺口：见 [Credits 与 tokens](#-credits-与-tokens)。
-  Tokens 页放 credits 是为了让槽位不空，表格上方的说明会讲清这个数字是什么。
+  Tokens 页保留 token 列是为了和 `cbut` 对齐，但只能留白；页顶说明讲清原因。
 - 🧰 **工具无法按名字排名。** 只有"按会话的计数"是真的；一张按工具分的表需要读那个加密的 agent 库。
 - 🎯 **Skills、Plugins、MCP 是清单而不是用量。** Trae 不记录逐实体的调用，所以这三页展示已安装的
   内容，而 Agents 页是唯一能计数的一页。面板稀疏是诚实的，编出来的排名不是。

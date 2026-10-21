@@ -1130,6 +1130,13 @@ def finalize(conn) -> None:
         "      SELECT ts FROM toolcall_events WHERE session_id = sessions.session_id)),"
         "   last_ts)")
     db.stamp_created_ts(conn)
+    # A model selection carries its id and nothing else on disk; decoding it needs
+    # the catalog *and* the sessions, so it belongs here rather than in one scanner.
+    # Both steps are idempotent and cheap, and both must run after every source has
+    # landed — a selection indexed today can refer to a model added to the catalog
+    # in the same pass.
+    db.decode_session_models(conn)
+    db.allocate_credits(conn)
     conn.commit()
 
 

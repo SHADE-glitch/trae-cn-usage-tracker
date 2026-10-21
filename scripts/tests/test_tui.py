@@ -97,6 +97,10 @@ class TuiBase(unittest.TestCase):
             " INSERT INTO memory(scope, idx, text) VALUES('user_profile',0,'likes tabs');"
         )
         conn.commit()
+        # Same post-sync step the real index runs, so the tables read the decoded
+        # route rather than a NULL left by a fixture that only inserted ids.
+        db.decode_session_models(conn)
+        conn.commit()
         conn.close()
 
     def app(self, config=None):
@@ -278,7 +282,10 @@ class InteractionTest(TuiBase):
         self.assertIn("learnt a thing", text)
         self.assertIn("a topic", text)
         self.assertIn("model · agent", text)
-        self.assertIn("agent_1__Model X_null", text)
+        self.assertIn("Model X", text)
+        self.assertIn("Built-in", text)
+        self.assertNotIn("agent_1__Model X_null", text,
+                         "the detail still prints Trae's raw id")
 
     def test_tab_binding_cycles_through_all_eight(self):
         async def go():
@@ -581,14 +588,100 @@ class DashboardPanelTest(TuiBase):
                 }
         out = run(go())
         # The seed gives session aaaa... the `agent` selection; bbbb... has none.
-        self.assertIn("agent_1__Model X_null", out["models"],
-                      "the Dashboard has no model ranking")
+        self.assertIn("Model X", out["models"],
+                      "the Dashboard has no decoded model ranking")
+        self.assertNotIn("agent_1__Model X_null", out["models"],
+                         "the ranking still prints Trae's raw id")
         self.assertIn("1", out["models"], "the ranking shows no session count")
-        self.assertIn("Latest balance", out["latest"])
-        self.assertIn("Spent at least", out["spent"])
+        self.assertIn("Balance", out["latest"])
+        self.assertIn("Spent", out["spent"])
         self.assertIn("Session sync", out["sync"])
         self.assertIn("not yet", out["sync"],
                       "a database the CLI indexed must not look like a failed sync")
+
+
+class ModelRouteTuiTest(TuiBase):
+    """The Tokens tab is a route table, not a raw balance series.
+
+    It must show where the estimated credits went, mark a third-party route as
+    `3P`, keep a token column that honestly reads `-`, and open the sessions
+    behind that route on Enter. The estimate is the only per-model spend Trae's
+    plaintext supports, so the header has to say `est.` too.
+    """
+
+    SESSION = "cccccccccccc3333"
+    THIRD_ID = "solo_agent_3_volcengine-plan_Route Z_99"
+
+    def _seed_route_and_drop(self):
+        import tcut_db as db
+        conn = db.open_db(self.db_path)
+        conn.executescript(
+            "INSERT INTO models(account, group_name, name, provider)"
+            " VALUES('acct-A','g','Route Z','volcengine-plan');"
+            "INSERT INTO sessions(session_id, project_key, turns, toolcalls,"
+            " created_ts) VALUES('cccccccccccc3333','-p--p2-z',4,2,1700001500000);"
+            "INSERT INTO session_models(session_id, account, agent_label, model_id)"
+            " VALUES('cccccccccccc3333','acct-A','solo_agent',"
+            "        'solo_agent_3_volcengine-plan_Route Z_99');"
+            "INSERT INTO credit_events(source, ts, kind, remaining, generation)"
+            " VALUES('/logs/a.log',1700001200000,'balance',1000.0,1),"
+            "       ('/logs/a.log',1700001800000,'balance',940.0,2);")
+        db.decode_session_models(conn)
+        db.allocate_credits(conn)
+        conn.commit()
+        conn.close()
+
+    def test_the_tokens_tab_ranks_routes_and_keeps_tokens_honest(self):
+        self._seed_route_and_drop()
+
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                tc = app.query_one(TabbedContent)
+                tc.active = "tab-tokens"
+                await pilot.pause()
+                table = app.screen.query_one("#t-tokens", DataTable)
+                labels = [str(c.label) for c in table.columns.values()]
+                row = [str(c) for c in table.get_row_at(0)]
+                note = str(app.screen.query_one("#tokens-note", Static).render())
+                return labels, row, note, table.row_count
+
+        labels, row, note, count = run(go())
+        self.assertEqual(labels, list(tui.TOKENS_COLUMNS))
+        # The fixture's built-in Model X session is in the same window; the route
+        # with the estimate sorts first.
+        self.assertEqual(count, 2)
+        self.assertEqual(row[labels.index("model")], "Route Z")
+        pos = labels.index("route")
+        self.assertEqual(row[pos], "3P")
+        self.assertEqual(row[labels.index("tokens")], "-")
+        self.assertEqual(row[labels.index("credits est.")], "60.00")
+        self.assertIn("no token counts", note)
+        self.assertIn("estimated", note)
+
+    def test_enter_on_a_route_opens_its_sessions_with_the_estimate(self):
+        self._seed_route_and_drop()
+
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                tc = app.query_one(TabbedContent)
+                tc.active = "tab-tokens"
+                await pilot.pause()
+                table = app.screen.query_one("#t-tokens", DataTable)
+                table.focus()
+                await pilot.press("enter")
+                await pilot.pause()
+                entity = app.screen.query_one("#t-entity", DataTable)
+                summary = str(app.screen.query_one("#entity-summary", Static).render())
+                return entity.row_count, summary, app.screen.query_one(
+                    "#entity-title", Static).render()
+
+        count, summary, title = run(go())
+        self.assertEqual(count, 1)
+        self.assertIn("1 session", summary)
+        self.assertIn("60.00 credits est.", summary)
+        self.assertIn("3P", str(title))
 
 
 class WindowRuleTest(TuiBase):

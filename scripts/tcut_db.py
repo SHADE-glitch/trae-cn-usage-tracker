@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # --- locations -------------------------------------------------------------
 
@@ -296,14 +296,54 @@ CREATE TABLE IF NOT EXISTS models (
 -- (state.vscdb `<uid>:AI.agent.model.session_selected_model`). Partial by nature:
 -- Trae keeps only the current selection per session, not the history, and only for
 -- sessions that are still in that map.
+--
+-- `model_id` is kept verbatim — it is what Trae wrote, and the decode below is a
+-- reading of it, not a replacement. `model`/`provider` are that reading: the
+-- catalog name the id embeds and the catalog's provider for it (empty = Trae's own
+-- route, otherwise a third-party channel such as `volcengine-plan`).
 CREATE TABLE IF NOT EXISTS session_models (
     session_id  TEXT,
     account     TEXT,
     agent_label TEXT,
     model_id    TEXT,
     mode        INTEGER,
+    model       TEXT,            -- decoded catalog name; NULL when the id names none
+    provider    TEXT,            -- catalog provider; '' for a built-in route
+    third_party INTEGER DEFAULT 0,
     PRIMARY KEY (session_id, agent_label)
 );
+-- The index on `model` is created by the v5 migration, not here: on a database from
+-- v4 the column does not exist yet, and `executescript` runs before the migration
+-- gets its turn.
+
+-- Every interval between two balance observations, and what the measured drop in
+-- that interval was spent on. `drop_amount` is the *only* measured quantity here:
+-- `remaining` fell by this much between the two samples, and nothing in Trae's
+-- plaintext says which call spent it. A negative `drop_amount` is a grant (the balance
+-- rose), recorded as such and never allocated.
+CREATE TABLE IF NOT EXISTS credit_intervals (
+    start_ts   INTEGER PRIMARY KEY,   -- the earlier balance observation
+    end_ts     INTEGER,               -- the later one
+    drop_amount REAL,                 -- remaining(start) - remaining(end)
+    weight     REAL,                  -- total turns available to split the drop over
+    sessions   INTEGER,               -- sessions created inside the interval
+    allocated  REAL                   -- sum of the shares below; equals drop_amount when > 0
+);
+
+-- One row per (session, model selection) inside an interval: that selection's share
+-- of the interval's measured drop, split by its sessions' turn counts. This is an
+-- **estimate** and every surface that prints it says so — the parts always add up
+-- to `credit_intervals.allocated`, so no credit is invented, but which model spent
+-- a given credit is Trae's silence, not our measurement.
+CREATE TABLE IF NOT EXISTS credit_alloc (
+    session_id  TEXT,
+    agent_label TEXT,
+    model_id    TEXT,
+    start_ts    INTEGER,              -- the interval this share belongs to
+    credits     REAL,
+    PRIMARY KEY (session_id, agent_label, start_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_credit_alloc_ts ON credit_alloc(start_ts);
 
 -- The agent's memory documents (project_memory.md, user_profile.md) split into
 -- paragraphs. Prose; governed by `store_content`.
@@ -646,9 +686,32 @@ def _add_created_ts(conn) -> bool:
     return True
 
 
+def _add_session_model_decode(conn) -> bool:
+    """v5: a selection carries what its id *means*, not just the id.
+
+    The two new columns are additive and the two estimate tables are created by
+    ``SCHEMA_SQL``; nothing is dropped, so an old database keeps every row and the
+    decode backfills from the catalog it already holds. A rebuild is not needed
+    because ``decode_session_models`` is idempotent and runs at the end of every sync
+    — this step only has to make room.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(session_models)")}
+    if not cols or "third_party" in cols:
+        return False
+    conn.execute("ALTER TABLE session_models ADD COLUMN model TEXT")
+    conn.execute("ALTER TABLE session_models ADD COLUMN provider TEXT")
+    conn.execute(
+        "ALTER TABLE session_models ADD COLUMN third_party INTEGER DEFAULT 0")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_models_model"
+        " ON session_models(model)")
+    return True
+
+
 MIGRATIONS: tuple = (
     ("models-per-account", _rebuild_models_per_account),
     ("sessions-created-ts", _add_created_ts),
+    ("session-model-decode", _add_session_model_decode),
 )
 
 
@@ -717,6 +780,8 @@ def migrate(db_path: Path | str = DB_PATH) -> str:
 def reset(conn: sqlite3.Connection) -> None:
     """Drop all data (keeps the schema). Used by ``sync --full``."""
     for table in (
+        "credit_alloc",
+        "credit_intervals",
         "toolcall_events",
         "turns",
         "credit_events",
@@ -794,12 +859,36 @@ UNDATED_S = "s.last_ts IS NULL AND s.created_ts IS NULL"
 UNMEASURED = "last_ts IS NULL"
 
 
-def _entity_conds(start_ts, end_ts, project, agent, model_id):
+def _cond_params(conds):
+    """Flatten a predicate list's parameters.
+
+    Most predicates carry one scalar, but the decoded-model EXISTS carries the
+    model and (optionally) the provider. Returning one flat list keeps every
+    caller on the same `?` order the SQL was built in, instead of a nested tuple
+    that sqlite refuses to bind.
+    """
+    out = []
+    for _, value in conds:
+        if isinstance(value, (tuple, list)):
+            out.extend(value)
+        else:
+            out.append(value)
+    return out
+
+
+def _entity_conds(start_ts, end_ts, project, agent, model_id,
+                  model=None, provider=None):
     """The one predicate list the session list and its header totals are built from.
 
     Both `q_sessions` and `q_entity_totals` read this, so a header cannot count a
     different set of rows than the table underneath it lists — the failure this repo
     has already met twice with two numbers on one screen.
+
+    ``model``/``provider`` narrow on the *decoded* selection (the Tokens tab's key),
+    while ``model_id`` keeps the raw-id behaviour the older screens use. A session
+    can hold several selections, so the decoded filter is an EXISTS: a session that
+    used this route through any agent label belongs in the list, and the totals count
+    it once.
     """
     conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
     if project is not None:
@@ -813,11 +902,19 @@ def _entity_conds(start_ts, end_ts, project, agent, model_id):
             "   ORDER BY CASE sm.agent_label WHEN 'agent' THEN 0"
             "            WHEN 'solo_agent' THEN 1 ELSE 2 END, sm.agent_label"
             "   LIMIT 1) = ?", model_id))
+    if model is not None:
+        sql = ("EXISTS (SELECT 1 FROM session_models sm"
+               " WHERE sm.session_id = s.session_id AND sm.model = ?")
+        params = [model]
+        if provider is not None:
+            sql += " AND COALESCE(sm.provider, '') = ?"
+            params.append(provider)
+        conds.append((sql + ")", tuple(params)))
     return conds
 
 
 def q_entity_totals(conn, start_ts=None, end_ts=None, project=None, agent=None,
-                    model_id=None):
+                    model_id=None, model=None, provider=None):
     """Windowed totals for one entity — the line its drill-down header prints.
 
     ``sessions``/``turns``/``toolcalls``/``projects`` aggregate exactly the rows
@@ -837,7 +934,8 @@ def q_entity_totals(conn, start_ts=None, end_ts=None, project=None, agent=None,
     span's edge differs from its measured edge, the position came from a session id and
     the header has to mark it.
     """
-    conds = _entity_conds(start_ts, end_ts, project, agent, model_id)
+    conds = _entity_conds(start_ts, end_ts, project, agent, model_id,
+                          model=model, provider=provider)
     where = (" WHERE " + " AND ".join(c for c, _ in conds)) if conds else ""
     return conn.execute(
         "SELECT COUNT(*) AS sessions,"
@@ -853,11 +951,11 @@ def q_entity_totals(conn, start_ts=None, end_ts=None, project=None, agent=None,
         " MAX(CASE WHEN s.last_ts IS NOT NULL THEN " + SESSION_TIME_S + " END)"
         "   AS last_measured"
         f" FROM sessions s{where}",
-        [p for _, p in conds]).fetchone()
+        _cond_params(conds)).fetchone()
 
 
 def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
-               agent=None, model_id=None):
+               agent=None, model_id=None, model=None, provider=None):
     """Sessions in the window, most recent first.
 
     ``project``/``agent``/``model_id`` narrow the list to one entity — the drill-down
@@ -873,7 +971,8 @@ def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
     one, else its ``solo_agent`` selection, else NULL — Trae keeps only the current
     choice per session, never a history of switches.
     """
-    conds = _entity_conds(start_ts, end_ts, project, agent, model_id)
+    conds = _entity_conds(start_ts, end_ts, project, agent, model_id,
+                          model=model, provider=provider)
     where = (" WHERE " + " AND ".join(c for c, _ in conds)) if conds else ""
     sql = (
         "SELECT s.session_id, s.project_key, s.project, s.day, s.agent,"
@@ -893,7 +992,7 @@ def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
         f" FROM sessions s{where}"
         f" ORDER BY {SESSION_TIME_S} DESC, s.session_id"
     )
-    params = [p for _, p in conds]
+    params = _cond_params(conds)
     if limit:
         sql += " LIMIT ?"
         params.append(int(limit))
@@ -918,6 +1017,19 @@ def q_session_learned(conn, session_id):
         (session_id,)).fetchall()
 
 
+def q_session_credits(conn, session_id):
+    """The credit estimate attributed to each of a session's selections.
+
+    A session can receive a share in several balance intervals; they are summed
+    per (agent label, raw model id), which is the key ``q_session_models`` uses.
+    A selection with no share has no row — callers read that as ``-``.
+    """
+    return conn.execute(
+        "SELECT agent_label, model_id, SUM(credits) AS credits"
+        "  FROM credit_alloc WHERE session_id = ?"
+        " GROUP BY agent_label, model_id", (session_id,)).fetchall()
+
+
 def q_session_models(conn, session_id):
     """Every model selection recorded for one session, by agent label.
 
@@ -926,7 +1038,8 @@ def q_session_models(conn, session_id):
     view shows all of them. ``model_id`` is NULL only when Trae wrote no selection.
     """
     return conn.execute(
-        "SELECT agent_label, model_id, mode, account FROM session_models"
+        "SELECT agent_label, model_id, model, provider, third_party, mode, account"
+        "  FROM session_models"
         " WHERE session_id = ? ORDER BY agent_label", (session_id,)).fetchall()
 
 
@@ -1067,19 +1180,265 @@ def q_credit_events(conn, kind=None):
     return conn.execute(sql, params).fetchall()
 
 
-def q_top_models(conn, limit=5, start_ts=None, end_ts=None):
-    """Models ranked by how many sessions in the window had them selected.
+def _credit_by_model(conn, start_ts=None, end_ts=None) -> dict:
+    """``{(model, provider): credits}`` from the estimate, windowed on the interval.
 
-    This is the honest shape of "top models" here: a session counts once for the
-    model it was set to, because Trae records no per-request model and no tokens.
+    Keyed by the interval's own start, because a credit was spent when the balance
+    fell -- not when the session that spent it was created. A session can span an
+    interval boundary, and attributing the drop to the session's creation day would
+    move spend into a window it did not happen in.
+    """
+    conds = _time_conds(start_ts, end_ts, col="ca.start_ts")
+    where = (" WHERE " + " AND ".join(c for c, _ in conds)) if conds else ""
+    out = {}
+    for r in conn.execute(
+            "SELECT sm.model AS model, sm.provider AS provider,"
+            "       SUM(ca.credits) AS credits"
+            "  FROM credit_alloc ca"
+            "  JOIN session_models sm ON sm.session_id = ca.session_id"
+            "       AND sm.agent_label = ca.agent_label"
+            "       AND sm.model_id = ca.model_id"
+            + where +
+            " GROUP BY sm.model, sm.provider",
+            [p for _, p in conds]):
+        out[(r["model"], r["provider"])] = r["credits"] or 0.0
+    return out
+
+
+def q_model_credits(conn, start_ts=None, end_ts=None):
+    """Per-model rows for the Tokens tab: sessions, estimated credits, share.
+
+    The union of two populations, keyed by (decoded model, provider) and never
+    windowed away -- the same rule every other entity tab follows:
+
+    * every model a session **selected** inside the window (``sessions``), the only
+      per-model usage fact Trae records;
+    * every model the credit estimate put spend on inside the window (``credits``).
+
+    ``credits`` is an estimate by construction: a share of a measured balance drop,
+    split by session turns (see ``allocate_credits``). Every surface prints the
+    header as ``est.`` and none shows it as a measured per-call cost.
+
+    ``coverage`` is the row's share of the window's allocated estimate -- the column
+    answers "where does the estimate think the credits went", and ``None`` (``-``)
+    when nothing was allocated, never a fabricated 0%.
+    """
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
+    and_clause, params = _on_time(conds)
+    used = conn.execute(
+        "SELECT sm.model AS model, sm.provider AS provider,"
+        "       MAX(sm.third_party) AS third_party,"
+        "       COUNT(DISTINCT sm.session_id) AS sessions,"
+        "       MAX(" + SESSION_TIME_S + ") AS last_used,"
+        "       MAX(CASE WHEN s.last_ts IS NULL THEN 1 ELSE 0 END) AS derived_ts"
+        "  FROM session_models sm JOIN sessions s ON s.session_id = sm.session_id"
+        " WHERE 1=1" + and_clause +
+        " GROUP BY sm.model, sm.provider", params).fetchall()
+    credits = _credit_by_model(conn, start_ts, end_ts)
+    rows = {}
+    for r in used:
+        rows[(r["model"], r["provider"])] = {
+            "model": r["model"], "provider": r["provider"],
+            "third_party": r["third_party"] or 0,
+            "sessions": r["sessions"] or 0,
+            "last_used": r["last_used"],
+            "derived_ts": r["derived_ts"] or 0,
+            "credits": credits.pop((r["model"], r["provider"]), None),
+        }
+    # A model the estimate charged but no selection in this window names: the spend
+    # happened here while the selection was recorded in an earlier window. It gets a
+    # row with 0 sessions rather than being dropped -- dropping it would make the
+    # estimate's own total disagree with the sum of the rows below it.
+    for (model, provider), value in credits.items():
+        rows[(model, provider)] = {
+            "model": model, "provider": provider,
+            "third_party": 1 if provider else 0,
+            "sessions": 0, "last_used": None, "derived_ts": 0,
+            "credits": value,
+        }
+    total = sum((r["credits"] or 0) for r in rows.values())
+    out = []
+    for r in rows.values():
+        r["coverage"] = (r["credits"] / total) if total and r["credits"] else None
+        out.append(r)
+    # Where the estimate thinks the credits went comes first: this is the Tokens
+    # page, not a session leaderboard. Sessions and the name break ties, so the
+    # order is stable across refreshes.
+    out.sort(key=lambda r: (-(r["credits"] or 0), -(r["sessions"] or 0),
+                            r["model"] or ""))
+    return out
+
+
+def q_usage_rows(conn, limit=None, start_ts=None, end_ts=None):
+    """The Usage page: one row per (session, model selection) in the window.
+
+    cbut's Usage page is a per-request ledger; Trae records no per-request line, so
+    the finest subject available is a session *and* the model it was set to. A
+    session that switched models yields one row per model, which is what puts a
+    third-party route in the log as a visible row instead of hiding it in a merged
+    cell. A session with no recorded selection still gets one row, model cells empty:
+    the session happened either way.
+
+    ``credits`` is this selection's share of the estimate; it is NULL for a session no
+    interval covers, which is a different fact from a measured zero and prints ``-``.
+
+    ``turns``/``toolcalls`` belong to the session and are therefore repeated across its
+    rows rather than divided: a per-model number would be a second estimate stacked
+    on the first.
+    """
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
+    where = (" WHERE " + " AND ".join(c for c, _ in conds)) if conds else ""
+    sql = (
+        "SELECT s.session_id, s.project_key, s.project, s.agent AS session_agent,"
+        "       s.turns, s.toolcalls,"
+        "       " + SESSION_TIME_S + " AS shown_ts,"
+        "       CASE WHEN s.last_ts IS NULL THEN 1 ELSE 0 END AS derived_ts,"
+        "       sm.agent_label, sm.model, sm.provider, sm.model_id,"
+        "       COALESCE(sm.third_party, 0) AS third_party,"
+        "       ca.credits AS credits"
+        "  FROM sessions s"
+        "  LEFT JOIN session_models sm ON sm.session_id = s.session_id"
+        # One session can receive a share in several balance intervals. The
+        # estimate is per (session, selection) in total, so sum those shares here;
+        # joining the table directly repeated the row once per interval and made
+        # the Usage page list the same selection twice.
+        "  LEFT JOIN (SELECT session_id, agent_label, model_id, SUM(credits) AS credits"
+        "               FROM credit_alloc GROUP BY session_id, agent_label, model_id)"
+        "       ca ON ca.session_id = sm.session_id"
+        "       AND ca.agent_label = sm.agent_label"
+        "       AND ca.model_id = sm.model_id"
+        + where +
+        " ORDER BY " + SESSION_TIME_S + " DESC, s.session_id, sm.agent_label"
+    )
+    params = [p for _, p in conds]
+    if limit:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return conn.execute(sql, params).fetchall()
+
+
+def q_model_sessions(conn, model, provider=None, start_ts=None, end_ts=None,
+                     limit=None):
+    """Sessions that used one decoded model route, with that route's estimate.
+
+    One row per session. A session can hold two selections of the same route
+    (``agent`` and ``solo_agent``), so the credits are summed here instead of
+    repeating the session once per slot. The route is matched with ``EXISTS`` on
+    the decoded pair, the same predicate ``q_entity_totals`` uses; ``provider``
+    of ``None`` means "any provider for this model", never a wildcard for NULL.
+
+    ``credits`` is NULL when no balance interval covers the session — an absence
+    of estimate, not a measured zero.
+    """
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
+    where = (" WHERE " + " AND ".join(c for c, _ in conds)) if conds else ""
+    params = [model]
+    sql = ("SELECT s.session_id, s.project_key, s.project, s.agent,"
+           "       s.turns, s.toolcalls, s.intent, s.outcome,"
+           f"       {SESSION_TIME_S} AS shown_ts,"
+           "       CASE WHEN s.last_ts IS NULL THEN 1 ELSE 0 END AS derived_ts,"
+           "       SUM(ca.credits) AS credits"
+           "  FROM sessions s"
+           "  JOIN session_models sm ON sm.session_id = s.session_id"
+           "       AND sm.model = ?")
+    if provider is not None:
+        sql += " AND COALESCE(sm.provider, '') = ?"
+        params.append(provider)
+    sql += ("  LEFT JOIN credit_alloc ca ON ca.session_id = sm.session_id"
+            "       AND ca.agent_label = sm.agent_label"
+            "       AND ca.model_id = sm.model_id")
+    sql += where + " GROUP BY s.session_id"
+    sql += f" ORDER BY {SESSION_TIME_S} DESC, s.session_id"
+    if limit:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    params += [p for _, p in conds]
+    return conn.execute(sql, params).fetchall()
+
+
+def q_third_party_sessions(conn, start_ts=None, end_ts=None):
+    """Sessions that selected a third-party route, in the window.
+
+    Trae records no per-request traffic, so this counts sessions, not calls. It is the
+    honest size of "how much of my work went through a non-built-in channel", and the
+    model list behind it is the Tokens tab.
+    """
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
+    and_clause, params = _on_time(conds)
+    return conn.execute(
+        "SELECT COUNT(DISTINCT sm.session_id) AS sessions,"
+        "       COUNT(DISTINCT sm.model) AS models"
+        "  FROM session_models sm JOIN sessions s ON s.session_id = sm.session_id"
+        " WHERE sm.third_party = 1" + and_clause, params).fetchone()
+
+
+def q_credit_summary(conn, start_ts=None, end_ts=None) -> dict:
+    """The window's credit picture: measured balance, estimated spend, coverage.
+
+    ``balance`` is the newest measured balance *inside* the window -- a level Trae
+    wrote, not a sum -- and ``None`` when the window holds no sample (a real absence,
+    not zero credits). ``spent`` is the measured drop inside the window and
+    ``allocated`` the part of it the estimate could place on a model;
+    ``unallocated`` is the remainder: sessions with no recorded selection, which no
+    honest split can charge to a model.
+
+    ``grants`` counts intervals where the balance rose. A grant is not negative spend
+    and is never netted into one, or a top-up would read as a refund of usage.
+    """
+    # Two different tables, two different time columns: an event has `ts`, an
+    # interval has `start_ts` (the moment its drop was measured from). Sharing one
+    # clause between them addressed a column that does not exist on the other side.
+    conds = _time_conds(start_ts, end_ts, col="ts")
+    params = [p for _, p in conds]
+    and_clause = (" AND " + " AND ".join(c for c, _ in conds)) if conds else ""
+    ival_conds = _time_conds(start_ts, end_ts, col="start_ts")
+    ival_clause = " WHERE 1=1" + "".join(" AND " + c for c, _ in ival_conds)
+    bal = conn.execute(
+        "SELECT ts, remaining FROM credit_events"
+        " WHERE kind = 'balance' AND remaining IS NOT NULL" + and_clause +
+        " ORDER BY ts DESC, source LIMIT 1", params).fetchone()
+    ivals = conn.execute(
+        "SELECT COUNT(*) AS n,"
+        "       COALESCE(SUM(CASE WHEN drop_amount > 0 THEN drop_amount END), 0) AS spent,"
+        "       COALESCE(SUM(CASE WHEN drop_amount > 0 THEN allocated END), 0) AS allocated,"
+        "       COALESCE(SUM(CASE WHEN drop_amount < 0 THEN 1 ELSE 0 END), 0) AS grants,"
+        "       COALESCE(SUM(CASE WHEN drop_amount > 0 THEN drop_amount END), 0)"
+        "         - COALESCE(SUM(CASE WHEN drop_amount > 0 THEN allocated END), 0)"
+        "           AS unallocated"
+        "  FROM credit_intervals" + ival_clause, params).fetchone()
+    third = q_third_party_sessions(conn, start_ts, end_ts)
+    return {
+        "balance": bal["remaining"] if bal else None,
+        "balance_ts": bal["ts"] if bal else None,
+        "samples": ivals["n"] or 0,
+        "spent": ivals["spent"] or 0.0,
+        "allocated": ivals["allocated"] or 0.0,
+        "unallocated": ivals["unallocated"] or 0.0,
+        "grants": ivals["grants"] or 0,
+        "third_sessions": third["sessions"] or 0,
+        "third_models": third["models"] or 0,
+    }
+
+def q_top_models(conn, limit=5, start_ts=None, end_ts=None):
+    """Model routes ranked by how many sessions in the window used them.
+
+    Keyed by the decoded ``(model, provider)`` pair, the same key the Tokens tab
+    groups on. A session counts once per route, because Trae records no per-request
+    model and no tokens. ``model`` is NULL when the id named no catalog entry; those
+    rows still count, under the raw id, so the ranking never silently drops a real
+    selection just because its name cannot be decoded.
     """
     conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
     where = (" AND " + " AND ".join(c for c, _ in conds)) if conds else ""
     sql = (
-        "SELECT sm.model_id, COUNT(DISTINCT sm.session_id) AS sessions"
+        "SELECT COALESCE(sm.model, sm.model_id) AS model,"
+        "       sm.provider AS provider,"
+        "       MAX(COALESCE(sm.third_party, 0)) AS third_party,"
+        "       COUNT(DISTINCT sm.session_id) AS sessions"
         "  FROM session_models sm JOIN sessions s ON s.session_id = sm.session_id"
         f" WHERE 1=1{where}"
-        " GROUP BY sm.model_id ORDER BY sessions DESC, sm.model_id LIMIT ?"
+        " GROUP BY COALESCE(sm.model, sm.model_id), sm.provider"
+        " ORDER BY sessions DESC, model LIMIT ?"
     )
     params = [p for _, p in conds] + [int(limit)]
     return conn.execute(sql, params).fetchall()
@@ -1176,6 +1535,210 @@ class CustomWindow(NamedTuple):
     end_ms: int | None
     follow_now: bool = False
 
+
+# --- model ids, providers, and the credit estimate -------------------------
+#
+# Trae stores a model selection as one opaque id, e.g.
+#   solo_agent_1__DeepSeek-V4-Flash-Official_null
+#   solo_agent_3_volcengine-plan_volcengine-plan//ark-code-latest_2837387906
+# The catalog name and the channel are *embedded* in it, and the second shape is a
+# third-party route. Decoding is a longest-match against the catalog this indexer
+# already stores, not a hand-written pattern: the ids carry no separator that is
+# reliable across shapes, and a name like `volcengine-plan//ark-code-latest` itself
+# contains both separators. The catalog is the authority for what a name means.
+
+# The label and its index: `<label>_<n>_`. Labels are lowercase words joined by
+# underscores (`solo_agent`, `solo_coder`, `agent`), so the prefix is unambiguous
+# up to the first digit group.
+MODEL_ID_PREFIX_RE = re.compile(r"^([a-z][a-z_]*?)_(\d+)_(.*)$", re.S)
+# A built-in selection ends in `_null` where the third-party shape carries an id.
+MODEL_ID_BUILTIN_SUFFIX = "_null"
+
+
+def decode_model_id(model_id, catalog):
+    """``(model, provider)`` for one Trae model id.
+
+    ``catalog`` maps a catalog name to its provider (``""`` for Trae's own route).
+    A name is matched when it appears in the id delimited by underscores, and the
+    **longest** match wins -- `DeepSeek-V4-Flash-Official` must beat
+    `DeepSeek-V4-Flash`, or an official route gets credited to the wrong model.
+
+    The **id's shape** decides the route: a built-in selection ends in `_null`,
+    while a third-party one carries a channel and an id after the model name. A
+    catalog entry can carry a provider for a model that is also selected through
+    Trae's own route, so the catalog alone must not turn a `_null` selection into
+    3P. For a third-party id the catalog's provider is the channel.
+
+    When no catalog name matches, the id is stripped of its label prefix and its
+    `_null` tail and returned as-is: it is still what Trae wrote, and inventing a
+    prettier name for it would be a guess. The provider is then unknown (``None``,
+    rendered `-`), not built-in.
+    """
+    if not model_id:
+        return None, None
+    best = None
+    probe = f"_{model_id}_"
+    for name in catalog:
+        if f"_{name}_" in probe and (best is None or len(name) > len(best)):
+            best = name
+    if best is not None:
+        if model_id.endswith(MODEL_ID_BUILTIN_SUFFIX):
+            return best, ""
+        return best, catalog[best]
+    m = MODEL_ID_PREFIX_RE.match(model_id)
+    rest = m.group(3) if m else model_id
+    if rest.startswith("_"):
+        rest = rest[1:]
+    if rest.endswith(MODEL_ID_BUILTIN_SUFFIX):
+        rest = rest[: -len(MODEL_ID_BUILTIN_SUFFIX)]
+    return (rest or None), None
+
+
+def catalog_providers(conn) -> dict:
+    """``{name: provider}`` over the whole catalog, built-in route as ``""``.
+
+    A name can appear under several accounts and groups with the same provider, so
+    the mapping is by name -- the same key the Tokens tab groups on. A name that is
+    somehow both built-in and third-party keeps the third-party label, because that
+    is the fact worth surfacing and the built-in reading is the default.
+    """
+    out = {}
+    for name, provider in conn.execute(
+            "SELECT name, COALESCE(NULLIF(MAX(provider), ''), '') AS provider"
+            "  FROM models WHERE name IS NOT NULL GROUP BY name"):
+        out[name] = provider or ""
+    return out
+
+
+def decode_session_models(conn) -> int:
+    """Fill ``session_models.model``/``provider``/``third_party``.
+
+    Returns the number of rows whose reading changed. Idempotent by construction: it
+    recomputes from the catalog every run, so a model Trae adds to the catalog -- or a
+    decode improved here -- reaches rows indexed weeks ago without a rebuild.
+    """
+    catalog = catalog_providers(conn)
+    changed = 0
+    for row in conn.execute(
+            "SELECT session_id, agent_label, model_id, model, provider"
+            "  FROM session_models").fetchall():
+        model, provider = decode_model_id(row["model_id"], catalog)
+        if (row["model"], row["provider"]) == (model, provider):
+            continue
+        conn.execute(
+            "UPDATE session_models SET model = ?, provider = ?, third_party = ?"
+            " WHERE session_id = ? AND agent_label = ?",
+            (model, provider, 1 if provider else 0,
+             row["session_id"], row["agent_label"]))
+        changed += 1
+    return changed
+
+
+def provider_label(value) -> str:
+    """The display label for a stored provider.
+
+    ``None`` means the id named no known model -- rendered `-` rather than
+    `Built-in`, because absence of evidence is not evidence of a built-in route.
+    ``""`` is Trae's own route, and any other value is the channel name as stored.
+    """
+    if value is None:
+        return "-"
+    return "Built-in" if value == "" else value
+
+
+def route_label(provider, third_party=None) -> str:
+    """``Built-in`` / ``3P`` / ``-`` for one selection.
+
+    The short form exists so a table can say which side of the line a model sits on
+    without repeating the whole channel name next to ``provider``. ``None`` stays
+    ``-``: a selection whose id named no catalog model is not evidence of either
+    route, and calling it built-in would be a guess.
+    """
+    if provider is None and third_party is None:
+        return "-"
+    if third_party:
+        return "3P"
+    if provider is None:
+        return "-"
+    return "Built-in" if provider == "" else "3P"
+
+
+def allocate_credits(conn) -> int:
+    """Split each measured balance drop across the models in its interval.
+
+    The only consumption-derived number in Trae's plaintext is the balance itself,
+    sampled roughly once per app start. Between two consecutive samples the balance
+    fell by a known amount and Trae does not say which call spent it. So:
+
+    * the interval's **drop** is measured and stored as-is (a rise is a grant: it is
+      stored with a negative drop and allocated to nothing);
+    * it is split over the sessions *created* inside the interval, by turn count --
+      a session with more turns did more work, so it plausibly spent more;
+    * a session that selected two models splits its share evenly between them,
+      because Trae records no per-model turn count.
+
+    The parts add up to the drop exactly, so the estimate never invents a credit --
+    but attribution *inside* an interval is inference, and every surface that shows
+    it says `est.`. A session whose share covers no recorded selection has its share
+    left unattributed rather than smeared over a model it may never have used.
+
+    Idempotent: both tables are rebuilt from scratch each run, which is also what
+    keeps them cheap -- a few dozen rows, not a scan of the sessions.
+    """
+    conn.execute("DELETE FROM credit_alloc")
+    conn.execute("DELETE FROM credit_intervals")
+    series = conn.execute(
+        "SELECT ts, remaining FROM credit_events"
+        " WHERE kind = 'balance' AND remaining IS NOT NULL"
+        " ORDER BY ts, source").fetchall()
+    selections = {}
+    for row in conn.execute(
+            "SELECT session_id, agent_label, model_id FROM session_models"):
+        selections.setdefault(row["session_id"], []).append(row)
+    # Ordered by creation time, so one forward walk serves every interval.
+    sessions = conn.execute(
+        "SELECT session_id, created_ts, turns FROM sessions"
+        " WHERE created_ts IS NOT NULL ORDER BY created_ts, session_id").fetchall()
+    pos = 0
+    written = 0
+    for a, b in zip(series, series[1:]):
+        start_ts, end_ts = a["ts"], b["ts"]
+        drop = a["remaining"] - b["remaining"]
+        while pos < len(sessions) and sessions[pos]["created_ts"] <= start_ts:
+            pos += 1
+        inside = []
+        scan = pos
+        while scan < len(sessions) and sessions[scan]["created_ts"] <= end_ts:
+            inside.append(sessions[scan])
+            scan += 1
+        # A session with no turns still happened, so it weighs 1 and not 0:
+        # otherwise a window of turn-less sessions would allocate nothing and leave
+        # the drop unexplained when there is a perfectly good place to put it.
+        weights = [(s, max(int(s["turns"] or 0), 1)) for s in inside]
+        total_weight = sum(w for _, w in weights)
+        allocated = 0.0
+        if drop > 0 and total_weight:
+            for session, weight in weights:
+                picks = selections.get(session["session_id"]) or []
+                if not picks:
+                    # No recorded selection: this share is real but has no model
+                    # to sit on, so it stays unattributed. Counted, not hidden.
+                    continue
+                each = drop * weight / total_weight / len(picks)
+                for pick in picks:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO credit_alloc(session_id,"
+                        " agent_label, model_id, start_ts, credits)"
+                        " VALUES(?,?,?,?,?)",
+                        (session["session_id"], pick["agent_label"],
+                         pick["model_id"], start_ts, each))
+                    allocated += each
+                    written += 1
+        conn.execute(
+            "INSERT OR REPLACE INTO credit_intervals(start_ts, end_ts, drop_amount,"
+            " weight, sessions, allocated) VALUES(?,?,?,?,?,?)",
+            (start_ts, end_ts, drop, float(total_weight), len(inside), allocated))
+    return written
 
 def credit_num(value) -> str:
     """A credit number without float noise (`1645.9756`, not `1645.9756000000001`).
@@ -1460,8 +2023,10 @@ def q_usage_summary(conn, start_ts=None, end_ts=None) -> dict:
     the same reason ``q_kpi`` reports it: a range does not turn a derivation
     into a measurement, so it stays all-time.
 
-    ``top_model`` is ``{"model_id", "sessions"}`` or ``None``: a session counts
-    once for the model it was set to, exactly as ``q_top_models`` ranks.
+    ``top_model`` is ``{"model", "provider", "third_party", "sessions"}`` or
+    ``None``: a session counts once for the route it was set to, exactly as
+    ``q_top_models`` ranks. ``third_sessions``/``third_models`` size the part of the
+    window that went through a third-party channel.
     """
     where, params = _time_filter(start_ts, end_ts, col=SESSION_TIME)
 
@@ -1473,11 +2038,20 @@ def q_usage_summary(conn, start_ts=None, end_ts=None) -> dict:
     mconds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
     m_and, m_params = _on_time(mconds)
     top = conn.execute(
-        "SELECT sm.model_id, COUNT(DISTINCT sm.session_id) AS sessions"
+        "SELECT COALESCE(sm.model, sm.model_id) AS model, sm.provider AS provider,"
+        "       MAX(COALESCE(sm.third_party, 0)) AS third_party,"
+        "       COUNT(DISTINCT sm.session_id) AS sessions"
         "  FROM session_models sm JOIN sessions s ON s.session_id = sm.session_id"
         f" WHERE 1=1{m_and}"
-        " GROUP BY sm.model_id ORDER BY sessions DESC, sm.model_id LIMIT 1",
+        " GROUP BY COALESCE(sm.model, sm.model_id), sm.provider"
+        " ORDER BY sessions DESC, model LIMIT 1",
         m_params,
+    ).fetchone()
+    third = conn.execute(
+        "SELECT COUNT(DISTINCT sm.session_id) AS sessions,"
+        "       COUNT(DISTINCT COALESCE(sm.model, sm.model_id)) AS models"
+        "  FROM session_models sm JOIN sessions s ON s.session_id = sm.session_id"
+        f" WHERE sm.third_party = 1{m_and}", m_params,
     ).fetchone()
     return {
         "sessions": one(f"SELECT COUNT(*) FROM sessions{where}", params),
@@ -1487,9 +2061,12 @@ def q_usage_summary(conn, start_ts=None, end_ts=None) -> dict:
         "toolcalls": one(
             f"SELECT COALESCE(SUM(toolcalls),0) FROM sessions{where}", params),
         "models": one(
-            "SELECT COUNT(DISTINCT sm.model_id) FROM session_models sm"
+            "SELECT COUNT(DISTINCT COALESCE(sm.model, sm.model_id))"
+            "  FROM session_models sm"
             " JOIN sessions s ON s.session_id = sm.session_id"
             f" WHERE 1=1{m_and}", m_params),
+        "third_sessions": third["sessions"] or 0,
+        "third_models": third["models"] or 0,
         "unmeasured": one(f"SELECT COUNT(*) FROM sessions WHERE {UNMEASURED}"),
         "top_model": dict(top) if top else None,
     }

@@ -253,6 +253,11 @@ class CliBase(unittest.TestCase):
             " INSERT INTO memory(scope, idx, text) VALUES('user_profile',0,'likes tabs');"
         )
         conn.commit()
+        # The real sync decodes and allocates at the end; `show` reads those
+        # columns, so the fixture must reach the same state.
+        db.decode_session_models(conn)
+        db.allocate_credits(conn)
+        conn.commit()
         conn.close()
 
     def run_cli(self, *args, env=None, expect_db=True):
@@ -403,7 +408,9 @@ class CommandTest(CliBase):
         self.assertIn("agent_1__Model X_null", out)
         rc, out = self.run_cli("show", "abc123def456")
         self.assertEqual(rc, 0, out)
-        self.assertIn("model     agent: agent_1__Model X_null", out)
+        self.assertIn("model     agent: Model X · Built-in", out)
+        self.assertIn("raw id    agent: agent_1__Model X_null", out)
+        self.assertIn("tokens    not recorded", out)
 
     def test_credits_lists_the_series_and_names_the_bound(self):
         rc, out = self.run_cli("credits")
