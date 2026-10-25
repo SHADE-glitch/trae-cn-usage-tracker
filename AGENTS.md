@@ -264,7 +264,7 @@ the reciprocal of the profile's §6 index, and these facts must then be kept tru
 - **Freeze / archive** — say so on the profile; never leave a stale "maintained".
 - **Public ↔ private** — a repo that goes private again must be **delisted**.
 
-**The GitHub About description is under the same rule.** It is a promise with 100 characters, and it
+**The GitHub About description is under the same rule.** It is a promise with 350 characters, and it
 must describe *this* repository, not the family. Two facts a copy of a sibling's About gets wrong:
 
 - **No "no message bodies"** — that promise belongs to `codebuddy-usage-tracker`. `store_content`
