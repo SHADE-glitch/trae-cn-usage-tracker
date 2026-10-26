@@ -215,8 +215,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     outcome    TEXT,
     turns      INTEGER DEFAULT 0,
     toolcalls  INTEGER DEFAULT 0,
-    first_ts   INTEGER,          -- epoch ms, best known
-    last_ts    INTEGER,
+    first_ts   INTEGER,          -- epoch ms, measured: snapshot tag times only
+    last_ts    INTEGER,          -- the memory folder's day is `day`, not this
     created_ts INTEGER           -- epoch ms *derived* from the session id, never
                                  -- written into first_ts/last_ts; see time_text
 );
@@ -905,8 +905,11 @@ def _on_time(conds) -> tuple[str, list]:
 
 
 # The instant a session is placed at: Trae's measured activity time when there is
-# one, else the creation second derived from the id. Reads paired with `derived_ts`
-# so a derived position can never be printed as if it were measured.
+# one, else the creation second derived from the id. Those are the only two sources:
+# `last_ts` is written from a snapshot tag's commit time and nothing else — the
+# memory folder's day is a date, not a clock, and lives in `sessions.day`. Reads are
+# paired with `derived_ts` so a derived position can never be printed as if it were
+# measured.
 SESSION_TIME = "COALESCE(last_ts, created_ts)"
 SESSION_TIME_S = "COALESCE(s.last_ts, s.created_ts)"
 # Rows no window can place at all: neither a measured time nor a derivable id. Every

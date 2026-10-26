@@ -1057,6 +1057,53 @@ class FinalizeTest(Base):
         self.assertEqual(s["project"], "/home/user/.local/share/x",
                          "workspace.json did not resolve the lossy project key")
 
+    def test_a_day_directory_is_a_day_not_a_measured_time(self):
+        """The folder name must not fill ``first_ts``/``last_ts``.
+
+        The day's midnight was written into the two *measured* columns, so a guess
+        printed without the ``~`` marker, never counted as unmeasured, and a
+        session whose summary moved to another day folder kept its first guess —
+        which then fell outside the window of the day it actually belonged to.
+        """
+        proj = self.tmp / "memory" / "projects" / "-p--p2-a" / "20260304"
+        proj.mkdir(parents=True)
+        (proj / "session_memory_abc123.jsonl").write_text(
+            json.dumps({"intent": "i"}) + "\n", encoding="utf-8")
+        sync.scan_session_memory(self.conn, cfg(), self.tmp / "memory" / "projects")
+        sync.finalize(self.conn)
+        self.conn.commit()
+
+        s = self.one("SELECT * FROM sessions WHERE session_id='abc123'")
+        self.assertEqual(s["day"], "20260304", "the day belongs in the day column")
+        self.assertIsNone(s["first_ts"],
+                          "the day folder's midnight was stored as a measurement")
+        self.assertIsNone(s["last_ts"],
+                          "the day folder's midnight was stored as a measurement")
+        row = db.q_sessions(self.conn)[0]
+        self.assertEqual(row["derived_ts"], 1,
+                         "a session with no measurement was not marked as derived")
+        self.assertEqual(db.q_kpi(self.conn)["unmeasured"], 1,
+                         "the session was not counted among the unmeasured")
+
+    def test_a_summary_that_moves_to_another_day_follows_its_day(self):
+        """``day`` follows the folder; nothing else was ever measured, so nothing
+        else changes — and the new day's window can place the session."""
+        root = self.tmp / "memory" / "projects"
+        first = root / "-p--p2-a" / "20260304"
+        first.mkdir(parents=True)
+        path = first / "session_memory_abc123.jsonl"
+        path.write_text(json.dumps({"intent": "i"}) + "\n", encoding="utf-8")
+        sync.scan_session_memory(self.conn, cfg(), root)
+        second = root / "-p--p2-a" / "20260305"
+        second.mkdir()
+        path.rename(second / path.name)
+        sync.scan_session_memory(self.conn, cfg(), root)
+        sync.finalize(self.conn)
+        self.conn.commit()
+        s = self.one("SELECT * FROM sessions WHERE session_id='abc123'")
+        self.assertEqual(s["day"], "20260305")
+        self.assertIsNone(s["last_ts"])
+
     def test_a_session_with_no_tags_keeps_zero_counts(self):
         proj = self.tmp / "memory" / "projects" / "-p--p2-a" / "20260304"
         proj.mkdir(parents=True)

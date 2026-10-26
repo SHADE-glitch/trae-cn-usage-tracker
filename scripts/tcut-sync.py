@@ -282,8 +282,12 @@ def _ingest_session_memory(conn, cfg, path, session_id, project_key, project,
             " outcome=COALESCE(excluded.outcome, outcome),"
             " first_ts=COALESCE(first_ts, excluded.first_ts),"
             " last_ts=COALESCE(last_ts, excluded.last_ts)",
+            # The folder is a *day*, not a clock: its midnight goes in `day` and
+            # nowhere else. Written into first_ts/last_ts it was a guess sitting in
+            # the measured columns — printed without `~`, never counted as
+            # unmeasured, and never corrected when the summary moved a day.
             (session_id, project_key, project, day_dir_name(day_ms), intent,
-             outcome, day_ms, day_ms),
+             outcome, None, None),
         )
         rows += 1
         # actions[] / learned[]: replace wholesale (the file is a snapshot).
