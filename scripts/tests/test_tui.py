@@ -600,6 +600,26 @@ class DashboardPanelTest(TuiBase):
                       "a database the CLI indexed must not look like a failed sync")
 
 
+    def test_a_catalog_count_and_a_used_count_never_share_one_word(self):
+        """The status bar counts catalog rows; a panel counts the models used.
+
+        Both used to say "models" — 291 above, 9 below, on one screen, with
+        nothing to tell the reader which was which.
+        """
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                host = app.screen
+                tc = host.query_one(TabbedContent)
+                tc.active = "tab-usage"
+                await pilot.pause()
+                return (app._status_line(),
+                        str(host.query_one("#sum-models", Static).render()))
+        status, panel = run(go())
+        self.assertIn("catalog models", status)
+        self.assertIn("Models used", panel)
+
+
 class ModelRouteTuiTest(TuiBase):
     """The Tokens tab is a route table, not a raw balance series.
 

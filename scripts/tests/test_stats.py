@@ -426,6 +426,42 @@ class CommandTest(CliBase):
         self.assertEqual(len(rows), 2,
                          "the numberless skipped event joined the balance series")
 
+    def test_stats_names_the_catalog_once_and_never_prints_two_model_counts(self):
+        """One word, one number: "models" meant the catalog and the models in use.
+
+        ``tcut stats` printed the catalog count twice, and the same word carried
+        the *used* count elsewhere — two numbers a reader has no way to tell apart.
+        """
+        rc, out = self.run_cli("stats")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.count("models"), 1, out)
+        self.assertIn("catalog", out)
+        self.assertIn("2 models", out)
+
+    def test_credits_total_does_not_shrink_with_the_limit(self):
+        """``--limit` says how many lines to print, not how much was spent."""
+        conn = db.open_db(self.db_path)
+        conn.executemany(
+            "INSERT INTO credit_events(source, ts, kind, remaining, generation)"
+            " VALUES('/x/logs/c.log', ?, 'balance', ?, 5)",
+            [(1700000300000 + i * 1000, 900 - i * 10) for i in range(1, 6)])
+        conn.commit()
+        conn.close()
+
+        def spent(text):
+            match = re.search(r"at least ([\d.]+) credits spent", text)
+            self.assertIsNotNone(match, text)
+            return match.group(1)
+
+        rc, full = self.run_cli("credits")
+        self.assertEqual(rc, 0, full)
+        rc, capped = self.run_cli("credits", "--limit", "1")
+        self.assertEqual(rc, 0, capped)
+        self.assertEqual(spent(capped), spent(full),
+                         "the total changed when only the printed rows were capped")
+        self.assertIn("showing the newest 1", capped)
+        self.assertNotIn("showing the newest", full)
+
     def test_credits_says_so_when_there_are_no_observations(self):
         empty = self.dir / "no-credits.db"
         conn = db.open_db(empty)

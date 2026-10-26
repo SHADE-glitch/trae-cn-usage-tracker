@@ -1587,7 +1587,7 @@ if HAVE_TEXTUAL:
             """The two panels above the model table, plus the one honest note."""
             self._put_panel("#tok-window", "Window",
                             db.window_label(self._range_of("tab-tokens")))
-            self._put_panel("#tok-models", "Models", f"{s['models']:,}")
+            self._put_panel("#tok-models", "Models used", f"{s['models']:,}")
             self._put_panel("#tok-sessions", "Sessions", f"{s['sessions']:,}")
             self._put_panel("#tok-third", "3P sessions",
                             f"{s['third_sessions']:,}")
@@ -1721,7 +1721,7 @@ if HAVE_TEXTUAL:
                 f"{db.count_n(o['toolcalls'], 'tool call')} · "
                 f"{db.count_n(o['skills'], 'skill')} · "
                 f"{db.count_n(o['agents'], 'agent')} · "
-                f"{o['models']:,} models · {o['credits']:,} credits · "
+                f"{o['models']:,} catalog models · {o['credits']:,} credits · "
                 f"{o['mcp']:,} mcp · "
                 f"last {ts(o['last_ts'])}"
             )
@@ -1980,7 +1980,7 @@ if HAVE_TEXTUAL:
             self._put_panel("#sum-calls", "Tool calls", f"{s['toolcalls']:,}")
             self._put_panel("#sum-dated", "Unmeasured",
                             db.count_n(s["unmeasured"], "session"))
-            self._put_panel("#sum-models", "Models", f"{s['models']:,}")
+            self._put_panel("#sum-models", "Models used", f"{s['models']:,}")
             self._put_panel("#sum-third", "3P sessions",
                             f"{s['third_sessions']:,}")
             # The top row is a route now, so it carries the same 3P tag the table

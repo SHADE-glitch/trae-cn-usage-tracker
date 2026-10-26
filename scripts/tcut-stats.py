@@ -77,9 +77,13 @@ def cmd_stats(conn, args):
     print("Trae CN usage tracker")
     print(f"  sessions   {o['sessions']}   projects {o['projects']}   "
           f"turns {o['turns']}   toolcalls {o['toolcalls']}")
-    print(f"  prompts    {o['prompts']}   agents {o['agents']}   models {o['models']}")
+    print(f"  prompts    {o['prompts']}   agents {o['agents']}")
     print(f"  installed  skills {o['skills']}   plugins {o['plugins']}   mcp {o['mcp']}")
-    print(f"  models     {o['models']}   credit balance observations {o['credits']}")
+    # Two different counts used to print under the same word — the catalog rows
+    # Trae advertises, and the models a session actually selected. The catalog is
+    # the one this line can count; the Usage panel names the other "Models used".
+    print(f"  catalog    {o['models']} models   "
+          f"credit balance observations {o['credits']}")
     if o["first_ts"] or o["last_ts"]:
         print(f"  span       {_ms(o['first_ts'])} → {_ms(o['last_ts'])}")
     if o["unparsed_records"]:
@@ -147,7 +151,11 @@ def cmd_models(conn, args):
 
 
 def cmd_credits(conn, args):
-    rows = db.q_credits(conn, limit=args.limit)
+    # The whole series is read even when only a few rows are printed: the total is
+    # a fact about the window, and summing the visible rows made it shrink with
+    # --limit — a "credits spent" that changed when you asked for fewer lines.
+    series = db.q_credits(conn)
+    rows = series[: args.limit] if args.limit else series
     skipped = len(db.q_credit_events(conn, "skipped"))
     print(table_or(
         ("when", "balance", "spent >=", "generation", "log"),
@@ -157,11 +165,13 @@ def cmd_credits(conn, args):
         empty="(no credit balance observations — Trae writes one at app start)"))
     if not rows:
         return 0
-    total = sum(r["spent_at_least"] or 0 for r in rows)
+    total = sum(r["spent_at_least"] or 0 for r in series)
 
-    line = (f"\n{db.count_n(len(rows), 'observation')} -"
+    line = (f"\n{db.count_n(len(series), 'observation')} -"
             f" latest {db.credit_num(rows[0]['remaining'])} -"
             f" at least {db.credit_num(total)} credits spent")
+    if len(rows) < len(series):
+        line += f" - showing the newest {len(rows)}"
     if skipped:
         line += f" - {db.count_n(skipped, 'fetch', 'fetches')} skipped"
     print(line)
