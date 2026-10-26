@@ -335,6 +335,49 @@ class MemoryDocsTest(Base):
         texts = [r["text"] for r in self.rows("SELECT text FROM memory")]
         self.assertEqual(texts, ["second version"])
 
+    def test_a_second_run_keeps_the_documents_it_did_not_reread(self):
+        """The table is replaced per document, not cleared per run.
+
+        A clear-then-reread-only-changed pass looks idempotent and is not: the
+        first sync fills the table, every later sync of the 30-second timer
+        empties it, and `tcut memory` answered with the command that kept it
+        empty. A run that reads no document must leave every row where it was.
+        """
+        root = self.tmp / "memory"
+        root.mkdir()
+        (root / "user_profile.md").write_text("first\n\nsecond\n", encoding="utf-8")
+        proj = root / "projects" / "-p--p2-a"
+        proj.mkdir(parents=True)
+        (proj / "project_memory.md").write_text("project line\n", encoding="utf-8")
+        sync.scan_memory_docs(self.conn, cfg(), root)
+        self.conn.commit()
+        sql = "SELECT scope, idx, text FROM memory ORDER BY scope, idx"
+        before = [tuple(r) for r in self.rows(sql)]
+        self.assertEqual(len(before), 3, "the fixture did not index both documents")
+
+        again = sync.scan_memory_docs(self.conn, cfg(), root)
+        self.conn.commit()
+        self.assertEqual(again, 0, "an unchanged document was re-read")
+        self.assertEqual([tuple(r) for r in self.rows(sql)], before,
+                         "a run that changed nothing emptied the memory table")
+
+    def test_a_deleted_document_takes_its_paragraphs_with_it(self):
+        """Replacing per document must still notice a document that is gone."""
+        root = self.tmp / "memory"
+        root.mkdir()
+        (root / "user_profile.md").write_text("kept\n", encoding="utf-8")
+        proj = root / "projects" / "-p--p2-a"
+        proj.mkdir(parents=True)
+        gone = proj / "project_memory.md"
+        gone.write_text("dropped\n", encoding="utf-8")
+        sync.scan_memory_docs(self.conn, cfg(), root)
+        self.conn.commit()
+        gone.unlink()
+        sync.scan_memory_docs(self.conn, cfg(), root)
+        self.conn.commit()
+        scopes = {r["scope"] for r in self.rows("SELECT DISTINCT scope FROM memory")}
+        self.assertEqual(scopes, {"user_profile"})
+
 
 # --- 5. snapshot git tags --------------------------------------------------
 

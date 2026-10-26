@@ -368,13 +368,19 @@ def _ingest_topics(conn, cfg, path, project_key) -> int:
 
 
 def scan_memory_docs(conn, cfg, root=None) -> int:
-    """Index ``user_profile.md`` and every ``project_memory.md`` as paragraphs."""
+    """Index ``user_profile.md`` and every ``project_memory.md`` as paragraphs.
+
+    Replaced **per document**, never by clearing the table first: the scan only
+    re-reads a document whose size or mtime changed, so a clear-all would wipe
+    every unchanged document on every run — and a 30-second sync timer would
+    leave the table empty for good after the first pass.
+    """
     root = root or memory_root()
     if not root.is_dir():
         return 0
     store = cfg["store_content"]
-    conn.execute("DELETE FROM memory")
     if not store:
+        conn.execute("DELETE FROM memory")
         return 0
     docs = []
     if (root / "user_profile.md").is_file():
@@ -388,6 +394,8 @@ def scan_memory_docs(conn, cfg, root=None) -> int:
         changed = _changed(conn, path)
         if changed is None:
             continue
+        # A document is one source: drop its own rows, then write the current ones.
+        conn.execute("DELETE FROM memory WHERE scope = ?", (scope,))
         for idx, para in enumerate(_paragraphs(path)):
             conn.execute(
                 "INSERT OR REPLACE INTO memory(scope, idx, text) VALUES(?,?,?)",
@@ -395,6 +403,15 @@ def scan_memory_docs(conn, cfg, root=None) -> int:
             rows += 1
         size, mtime, _ = changed
         _set_cursor(conn, str(path), size, mtime, 0)
+    # The scan enumerates every document that exists, so a scope it did not see
+    # is a document that was deleted — and its rows have to go with it.
+    scopes = [scope for scope, _ in docs]
+    if scopes:
+        conn.execute(
+            "DELETE FROM memory WHERE scope NOT IN (%s)"
+            % ",".join("?" * len(scopes)), scopes)
+    else:
+        conn.execute("DELETE FROM memory")
     return rows
 
 
