@@ -21,6 +21,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
@@ -656,6 +657,24 @@ class DateRangePickerTest(TuiBase):
         self.assertEqual((got.start_ms, got.end_ms, got.follow_now),
                          (None, None, False),
                          "the picker prefilled All time with an end of now")
+
+    def test_the_end_of_day_chip_includes_the_last_minute(self):
+        """A window's end is exclusive, so a "23:59" end dropped the last minute.
+
+        The chip wrote 23:59 into the end card, and every window here is
+        ``[start, end)`` — activity between 23:59:00 and 23:59:59.999 fell
+        outside the day it belongs to. The chip writes the next midnight, which
+        is the same instant on a clock and exact in this model.
+        """
+        got = self._pick("7d", ["#dr-end-quick-3"])
+        now_day = datetime.fromtimestamp(1700002000).date()
+        expected = int(datetime(now_day.year, now_day.month, now_day.day).timestamp()
+                       + 24 * 3600) * 1000
+        self.assertFalse(got.follow_now, "the chip left the end following the clock")
+        self.assertEqual(got.end_ms, expected,
+                         "the end-of-day chip did not reach the day's exclusive end")
+        late = expected - 30_000                  # 23:59:30 on the day it ends
+        self.assertLess(late, got.end_ms, "23:59:30 fell outside the day")
 
     def test_the_picker_all_time_lands_on_the_preset_the_select_names(self):
         async def go():

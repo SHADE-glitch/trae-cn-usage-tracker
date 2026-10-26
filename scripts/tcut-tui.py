@@ -295,9 +295,11 @@ if HAVE_TEXTUAL:
         # The quick-time row under each card. The start card offers the day's
         # edges and the common halves; the end card also offers ``now``, which
         # is the same thing as ticking "follows current time" — the two ends of
-        # the same choice, one click each.
+        # the same choice, one click each. ``24:00`` is the day's *exclusive*
+        # end: a window is ``[start, end)``, so an end of 23:59 would drop the
+        # last minute of the day it names.
         QUICK_START = ("00:00", "06:00", "12:00", "18:00", "23:59")
-        QUICK_END = ("now", "00:00", "12:00", "23:59")
+        QUICK_END = ("now", "00:00", "12:00", "24:00")
         # The nudge selector: (label, minutes). ↑/↓ and the wheel move by the
         # selected step, so a day's edge is reachable without typing.
         STEPS = (("1m", 1), ("10m", 10), ("1h", 60))
@@ -592,8 +594,31 @@ if HAVE_TEXTUAL:
                 self.query_one("#dr-follow", Checkbox).value = True
                 self._render_hours()
                 return
+            if label == "24:00":
+                self._write_end_of_day()
+                return
             hour, minute = db.parse_time(label)
             self._write_time(card, db.format_time(hour, minute))
+
+        def _write_end_of_day(self) -> None:
+            """Put the end card on the midnight *after* the day it names.
+
+            ``24:00`` is not a time this field can hold, and 23:59 would exclude
+            the last minute of the day; the next midnight is the same instant
+            written where the right-open window can use it.
+            """
+            try:
+                day = db.parse_date(
+                    self.query_one("#dr-end-date", Input).value,
+                    self._view.year).date()
+            except ValueError:
+                day = datetime.fromtimestamp(self._now / 1000).date()
+            nxt = day + timedelta(days=1)
+            self.query_one("#dr-follow", Checkbox).value = False
+            value = db.format_date(nxt)
+            self.query_one("#dr-end-date", Input).value = value
+            self._written["dr-end-date"] = value
+            self._write_time("end", "00:00")
 
         # -- nudge step ------------------------------------------------------
         def _set_step(self, minutes: int) -> None:
