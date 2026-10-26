@@ -215,7 +215,7 @@ def scan_session_memory(conn, cfg, root=None) -> int:
             for path in sorted(day_dir.glob("session_memory_*.jsonl")):
                 m = _SESSION_MEMORY_RE.match(path.name)
                 if not m:
-                    db.note_unparsed(conn, "session_memory:bad_name", 1)
+                    db.note_unparsed(conn, "session_memory:bad_name", 1, str(path))
                     continue
                 session_id = m.group(1)
                 touched += _ingest_session_memory(
@@ -232,6 +232,7 @@ def _ingest_session_memory(conn, cfg, path, session_id, project_key, project,
     _, _, offset = _cursor(conn, str(path))
     if offset > size:                      # file shrank/rotated: re-read
         offset = 0
+        db.forget_unparsed(conn, str(path), "session_memory:")
     try:
         with open(path, "rb") as fh:
             fh.seek(offset)
@@ -263,10 +264,10 @@ def _ingest_session_memory(conn, cfg, path, session_id, project_key, project,
         try:
             obj = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
-            db.note_unparsed(conn, "session_memory:not_json", 1)
+            db.note_unparsed(conn, "session_memory:not_json", 1, str(path))
             continue
         if not isinstance(obj, dict):
-            db.note_unparsed(conn, "session_memory:not_object", 1)
+            db.note_unparsed(conn, "session_memory:not_object", 1, str(path))
             continue
         intent = obj.get("intent") if store else None
         outcome = obj.get("outcome") if store else None
@@ -344,22 +345,27 @@ def _ingest_topics(conn, cfg, path, project_key) -> int:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
+    # One topics.md is one source, and the file is a snapshot: re-reading it
+    # replaces its rows and its skip counts instead of merging into them.
+    source = str(path)
+    conn.execute("DELETE FROM topics WHERE source = ?", (source,))
+    db.forget_unparsed(conn, source, "topic:")
     for line in text.splitlines():
         if not line.strip():
             continue
         m = _TOPIC_RE.match(line.strip())
         if not m:
-            db.note_unparsed(conn, "topic:no_match", 1)
+            db.note_unparsed(conn, "topic:no_match", 1, source)
             continue
         session_id, when, summary = m.group(1), m.group(2), m.group(3)
         ts = parse_topic_time(when)
         if ts is None:
-            db.note_unparsed(conn, "topic:bad_time", 1)
+            db.note_unparsed(conn, "topic:bad_time", 1, source)
             continue
         conn.execute(
-            "INSERT OR REPLACE INTO topics(session_id, ts, project_key, summary)"
-            " VALUES(?,?,?,?)",
-            (session_id, ts, project_key, summary if store else None))
+            "INSERT OR REPLACE INTO topics(session_id, ts, project_key, summary,"
+            " source) VALUES(?,?,?,?,?)",
+            (session_id, ts, project_key, summary if store else None, source))
         rows += 1
     return rows
 
@@ -459,6 +465,9 @@ def scan_snapshots(conn, cfg, root=None) -> int:
         session_id = session_dir.name
         conn.execute(
             "INSERT OR IGNORE INTO sessions(session_id) VALUES(?)", (session_id,))
+        # A changed ref store is re-read whole, so this pass replaces the repo's
+        # skip count rather than adding a second copy of it.
+        db.forget_unparsed(conn, str(git_dir), "snapshot:")
         for tag, sha in _iter_tags(git_dir):
             tm = _TURNTAG_RE.match(tag)
             cm = None if tm else _TOOLCALLTAG_RE.match(tag)
@@ -469,7 +478,8 @@ def scan_snapshots(conn, cfg, root=None) -> int:
                 # A row with no time is dropped by every windowed view, so a gap here
                 # is a fact about the store. It used to be silent, and silent is how
                 # "all timestamps NULL" passed for a year of green tests.
-                db.note_unparsed(conn, "snapshot:time_unreadable", 1)
+                db.note_unparsed(conn, "snapshot:time_unreadable", 1,
+                                 str(git_dir))
             if tm:
                 conn.execute(
                     "INSERT OR REPLACE INTO turns(session_id, turn_id, ts)"
@@ -625,13 +635,14 @@ def scan_state_vscdb(conn, cfg) -> int:
         try:
             conn2 = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         except sqlite3.Error:
-            db.note_unparsed(conn, "vscdb:open_failed", 1)
+            db.note_unparsed(conn, "vscdb:open_failed", 1, str(path))
             continue
         conn2.row_factory = sqlite3.Row
         try:
-            rows += _ingest_vscdb(conn, conn2, workspace, cfg["store_content"])
+            rows += _ingest_vscdb(conn, conn2, workspace, cfg["store_content"],
+                                  source=str(path))
         except sqlite3.Error:
-            db.note_unparsed(conn, "vscdb:read_failed", 1)
+            db.note_unparsed(conn, "vscdb:read_failed", 1, str(path))
         finally:
             conn2.close()
         size, mtime, _ = changed
@@ -778,8 +789,11 @@ def _consumption_rate(entry):
     return float(value)
 
 
-def _ingest_vscdb(conn, conn2, workspace, store_content=True) -> int:
+def _ingest_vscdb(conn, conn2, workspace, store_content=True, source="") -> int:
     rows = 0
+    # The file is re-read whole when it changes, so this pass replaces the two
+    # counts it can produce instead of stacking a second copy on the first.
+    db.forget_unparsed(conn, source, "model_map:", "session_model:")
     history = _vscdb_value(conn2, VSCDB_KEYS["prompt_history"])
     if isinstance(history, list):
         conn.execute("DELETE FROM prompts WHERE workspace = ?", (workspace,))
@@ -825,22 +839,22 @@ def _ingest_vscdb(conn, conn2, workspace, store_content=True) -> int:
         account = key.rsplit("_AI.agent.model.model_list_map", 1)[0] or "undefined"
         data = _vscdb_value(conn2, key)
         if data is None:
-            db.note_unparsed(conn, "model_map:not_json", 1)
+            db.note_unparsed(conn, "model_map:not_json", 1, source)
             continue
         if not isinstance(data, dict):
-            db.note_unparsed(conn, "model_map:shape", 1)
+            db.note_unparsed(conn, "model_map:shape", 1, source)
             continue
         for group, entries in data.items():
             if not isinstance(entries, list):
-                db.note_unparsed(conn, "model_map:group_shape", 1)
+                db.note_unparsed(conn, "model_map:group_shape", 1, source)
                 continue
             for entry in entries:
                 if not isinstance(entry, dict):
-                    db.note_unparsed(conn, "model_map:entry_shape", 1)
+                    db.note_unparsed(conn, "model_map:entry_shape", 1, source)
                     continue
                 name = entry.get("name") or entry.get("display_name")
                 if not isinstance(name, str) or not name:
-                    db.note_unparsed(conn, "model_map:no_name", 1)
+                    db.note_unparsed(conn, "model_map:no_name", 1, source)
                     continue
                 conn.execute(
                     "INSERT OR REPLACE INTO models(account, group_name, name,"
@@ -861,19 +875,19 @@ def _ingest_vscdb(conn, conn2, workspace, store_content=True) -> int:
         account = key.rsplit(":AI.agent.model.session_selected_model", 1)[0]
         data = _vscdb_value(conn2, key)
         if data is None:
-            db.note_unparsed(conn, "session_model:not_json", 1)
+            db.note_unparsed(conn, "session_model:not_json", 1, source)
             continue
         if not isinstance(data, dict):
-            db.note_unparsed(conn, "session_model:shape", 1)
+            db.note_unparsed(conn, "session_model:shape", 1, source)
             continue
         for sid, labels in data.items():
             if not isinstance(sid, str) or not isinstance(labels, dict):
-                db.note_unparsed(conn, "session_model:shape", 1)
+                db.note_unparsed(conn, "session_model:shape", 1, source)
                 continue
             for label, sel in labels.items():
                 model_id = sel.get("modelId") if isinstance(sel, dict) else None
                 if not isinstance(model_id, str) or not model_id:
-                    db.note_unparsed(conn, "session_model:no_model_id", 1)
+                    db.note_unparsed(conn, "session_model:no_model_id", 1, source)
                     continue
                 conn.execute(
                     "INSERT OR REPLACE INTO session_models(session_id, account,"
@@ -986,12 +1000,15 @@ def _scan_mcps(conn) -> int:
     for meta_path in sorted(root.rglob("SERVER_METADATA.json")):
         server_dir = meta_path.parent
         name = server_dir.name
+        # The inventory is re-read in full on every sync, so the count for this
+        # file is replaced each time rather than added to.
+        db.forget_unparsed(conn, str(meta_path), "mcp:")
         try:
             data = json.loads(meta_path.read_text(encoding="utf-8"))
             if isinstance(data, dict) and data.get("server_name"):
                 name = data["server_name"]
         except (OSError, ValueError):
-            db.note_unparsed(conn, "mcp:bad_metadata", 1)
+            db.note_unparsed(conn, "mcp:bad_metadata", 1, str(meta_path))
         scope = server_dir.parent.name
         _inv(conn, "mcp", name, "plugin", path=server_dir, owner=scope)
         rows += 1
@@ -1076,12 +1093,13 @@ def scan_credit_logs(conn, cfg, root=None) -> int:
         size, mtime, offset = changed
         if offset > size:                     # rotated or truncated: re-read
             offset = 0
+            db.forget_unparsed(conn, str(path), "credit_log:")
         try:
             with open(path, "rb") as fh:
                 fh.seek(offset)
                 blob = fh.read()
         except OSError:
-            db.note_unparsed(conn, "credit_log:read_failed", 1)
+            db.note_unparsed(conn, "credit_log:read_failed", 1, str(path))
             continue
         parts = blob.split(b"\n")
         tail = parts.pop()                    # keep an unfinished line for next run
@@ -1100,7 +1118,7 @@ def _ingest_credit_line(conn, source, text) -> int:
         return 0
     ts = _log_ts_ms(text)
     if ts is None:
-        db.note_unparsed(conn, "credit_log:bad_timestamp", 1)
+        db.note_unparsed(conn, "credit_log:bad_timestamp", 1, source)
         return 0
     m = _BALANCE_RE.search(text)
     if m:
@@ -1117,7 +1135,7 @@ def _ingest_credit_line(conn, source, text) -> int:
         return 1
     # A tagged line we cannot classify: the service changed what it writes, which
     # is exactly the kind of change that must not pass silently.
-    db.note_unparsed(conn, "credit_log:event_shape", 1)
+    db.note_unparsed(conn, "credit_log:event_shape", 1, source)
     return 0
 
 

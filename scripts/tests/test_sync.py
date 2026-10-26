@@ -283,6 +283,47 @@ class TopicsTest(Base):
         self.assertIsNotNone(t, "the topic row is metadata (session + time) and must survive")
         self.assertIsNone(t["summary"])
 
+    def test_a_removed_line_stops_being_indexed(self):
+        """A topics file is a snapshot: a re-read replaces its rows, not merges.
+
+        Upserting alone made the table a union of every version of the file ever
+        seen, so a line the model withdrew stayed in the index for good.
+        """
+        self._write("-p--p2-a", "20260304",
+                    "[session_id: abc | topic_summary_time: 2026-03-04 05:00:00] kept\n"
+                    "[session_id: def | topic_summary_time: 2026-03-04 06:00:00] gone\n")
+        root = self.tmp / "projects"
+        sync.scan_topics(self.conn, cfg(), root)
+        self.conn.commit()
+        self.assertEqual(self.one("SELECT COUNT(*) c FROM topics")["c"], 2)
+
+        self._write("-p--p2-a", "20260304",
+                    "[session_id: abc | topic_summary_time: 2026-03-04 05:00:00] kept\n")
+        sync.scan_topics(self.conn, cfg(), root)
+        self.conn.commit()
+        summaries = [r["summary"] for r in self.rows("SELECT summary FROM topics")]
+        self.assertEqual(summaries, ["kept"],
+                         "a line deleted from the file was still indexed")
+
+    def test_a_bad_line_is_counted_once_however_often_the_file_is_reread(self):
+        """The skip count describes the file, not the number of syncs.
+
+        A topics file is re-read whole on every change, and the count was added
+        to each time — three edits of a file with one bad line reported three
+        unparsed records and made `tcut health` look like a format change.
+        """
+        self._write("-p--p2-a", "20260304", "not a topic line\n")
+        root = self.tmp / "projects"
+        for i in range(3):
+            self._write("-p--p2-a", "20260304",
+                        "not a topic line\n"
+                        f"[session_id: s{i} | topic_summary_time: 2026-03-04] ok\n")
+            sync.scan_topics(self.conn, cfg(), root)
+            self.conn.commit()
+        counted = {r["reason"]: r["count"] for r in db.q_unparsed(self.conn)}
+        self.assertEqual(counted.get("topic:no_match"), 1,
+                         f"one bad line was counted {counted.get('topic:no_match')} times")
+
 
 # --- 4. memory documents ---------------------------------------------------
 

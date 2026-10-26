@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # --- locations -------------------------------------------------------------
 
@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS topics (
     ts         INTEGER,
     project_key TEXT,
     summary    TEXT,
+    source     TEXT,             -- the topics.md the line was read from
     PRIMARY KEY (session_id, ts)
 );
 
@@ -415,9 +416,15 @@ CREATE TABLE IF NOT EXISTS sync_state (
 -- Records the indexer saw but could not use: a summary file that is not JSON,
 -- a topics line that does not match, a git object that will not inflate. The
 -- count is what turns a Trae format change into something visible.
+--
+-- Keyed by (reason, source) because the count is replaced per source, not added
+-- per run: a whole-file source is re-read whenever it changes, and a bare
+-- running total reported one bad line three times after three edits.
 CREATE TABLE IF NOT EXISTS unparsed (
-    reason TEXT PRIMARY KEY,       -- "session_memory:not_json" | "topic:no_match" | ...
-    count  INTEGER NOT NULL DEFAULT 0
+    reason TEXT NOT NULL,          -- "session_memory:not_json" | "topic:no_match" | ...
+    source TEXT NOT NULL DEFAULT '',  -- the file it came from; '' when it has none
+    count  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (reason, source)
 );
 """
 
@@ -708,10 +715,48 @@ def _add_session_model_decode(conn) -> bool:
     return True
 
 
+def _add_unparsed_source(conn: sqlite3.Connection) -> bool:
+    """v6: ``unparsed`` counts per (reason, source).
+
+    A count keyed by the reason alone could only be added to, so re-reading a
+    file that had not changed reported its bad lines again and the number grew
+    with the number of syncs. The table is rebuilt rather than altered: the key
+    is the change, and SQLite cannot add a column to a primary key. Existing
+    counts are kept under an empty source, which is what a row written before
+    this version honestly is — "this file was not recorded".
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(unparsed)")}
+    if not cols or "source" in cols:
+        return False
+    conn.execute("ALTER TABLE unparsed RENAME TO unparsed_old")
+    conn.executescript(SCHEMA_SQL)
+    conn.execute("INSERT INTO unparsed(reason, source, count)"
+                 " SELECT reason, '', count FROM unparsed_old")
+    conn.execute("DROP TABLE unparsed_old")
+    return True
+
+
+def _add_topic_source(conn: sqlite3.Connection) -> bool:
+    """v6: ``topics`` remembers which ``topics.md`` a line came from.
+
+    The table is a snapshot of a file that is re-read whole when it changes, so
+    re-reading has to replace that file's rows. Without the provenance the only
+    key available is (session, time), and a line deleted from the file could not
+    be told from one that was never there.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(topics)")}
+    if not cols or "source" in cols:
+        return False
+    conn.execute("ALTER TABLE topics ADD COLUMN source TEXT")
+    return True
+
+
 MIGRATIONS: tuple = (
     ("models-per-account", _rebuild_models_per_account),
     ("sessions-created-ts", _add_created_ts),
     ("session-model-decode", _add_session_model_decode),
+    ("unparsed-per-source", _add_unparsed_source),
+    ("topic-source", _add_topic_source),
 )
 
 
@@ -803,24 +848,40 @@ def reset(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def note_unparsed(conn: sqlite3.Connection, reason: str, n: int) -> None:
+def note_unparsed(conn: sqlite3.Connection, reason: str, n: int,
+                  source: str = "") -> None:
     """Add ``n`` to the count of records the indexer could not use.
 
-    Called once per reason per file, not per record: a format change can make
-    tens of thousands of records unknown in one run, and one statement each
-    would cost more than the parsing it is reporting on.
+    ``source`` is the file the records came from. A whole-file source is re-read
+    whenever it changes, so its handler calls :func:`forget_unparsed` first and
+    the count describes the file as it is now — otherwise one bad line was
+    reported once per edit and the number grew without the file changing.
     """
     conn.execute(
-        "INSERT INTO unparsed(reason, count) VALUES(?,?)"
-        " ON CONFLICT(reason) DO UPDATE SET count = count + excluded.count",
-        (reason, n),
+        "INSERT INTO unparsed(reason, source, count) VALUES(?,?,?)"
+        " ON CONFLICT(reason, source) DO UPDATE SET count = count + excluded.count",
+        (reason, source, n),
     )
 
 
+def forget_unparsed(conn: sqlite3.Connection, source: str, *prefixes: str) -> None:
+    """Drop one source's previous counts, before that source is re-read."""
+    for prefix in prefixes:
+        conn.execute(
+            "DELETE FROM unparsed WHERE source = ? AND reason LIKE ?",
+            (source, prefix + "%"),
+        )
+
+
 def q_unparsed(conn: sqlite3.Connection):
-    """Every reason records were skipped for, most frequent first."""
+    """Every reason records were skipped for, most frequent first.
+
+    Summed over sources: the caller asks what the index cannot read, not which
+    file each record came from.
+    """
     return conn.execute(
-        "SELECT reason, count FROM unparsed ORDER BY count DESC, reason").fetchall()
+        "SELECT reason, SUM(count) AS count FROM unparsed"
+        " GROUP BY reason ORDER BY count DESC, reason").fetchall()
 
 
 # --- shared queries (used by both the CLI and the TUI) ---------------------
@@ -2109,5 +2170,5 @@ def overview(conn) -> dict:
         # Records no handler claimed. Non-zero after a Trae update means the
         # format moved under us, not that you stopped using it.
         "unparsed_records": one("SELECT COALESCE(SUM(count),0) FROM unparsed"),
-        "unparsed_kinds": one("SELECT COUNT(*) FROM unparsed"),
+        "unparsed_kinds": one("SELECT COUNT(DISTINCT reason) FROM unparsed"),
     }

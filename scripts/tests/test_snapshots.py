@@ -236,6 +236,74 @@ class CreatedTsMigrationTest(unittest.TestCase):
         conn.close()
 
 
+class PerSourceMigrationTest(unittest.TestCase):
+    """v6 keyed ``unparsed`` by (reason, source) and gave ``topics`` its file.
+
+    Both tables are written by a re-read, so both had to learn which file a row
+    came from — the count by replacing, the topic by deleting. An upgrade must
+    keep every row: the numbers are a measurement of the old index, not a cache.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.db_path = Path(self._tmp.name) / "usage.db"
+
+    def _build_v5(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+            "INSERT INTO meta(key, value) VALUES('schema_version','5');"
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, project TEXT,"
+            " project_key TEXT, day TEXT, agent TEXT, intent TEXT, outcome TEXT,"
+            " turns INTEGER DEFAULT 0, toolcalls INTEGER DEFAULT 0,"
+            " first_ts INTEGER, last_ts INTEGER);"
+            "INSERT INTO sessions(session_id) VALUES('s1');"
+            "CREATE TABLE unparsed (reason TEXT PRIMARY KEY,"
+            " count INTEGER NOT NULL DEFAULT 0);"
+            "INSERT INTO unparsed VALUES('topic:no_match', 4);"
+            "CREATE TABLE topics (session_id TEXT, ts INTEGER, project_key TEXT,"
+            " summary TEXT, PRIMARY KEY (session_id, ts));"
+            "INSERT INTO topics VALUES('s1', 1700000000000, '-p', 'a topic');"
+        )
+        conn.commit()
+        conn.close()
+
+    def _columns(self, conn, table):
+        return [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')]
+
+    def test_the_upgrade_keeps_every_count_and_every_topic(self):
+        self._build_v5()
+        self.assertEqual(db.migrate(self.db_path), "migrated")
+        conn = db.open_db(self.db_path, readonly=True)
+        try:
+            self.assertIn("source", self._columns(conn, "unparsed"))
+            self.assertIn("source", self._columns(conn, "topics"))
+            row = conn.execute("SELECT reason, source, count FROM unparsed").fetchone()
+            self.assertEqual(tuple(row), ("topic:no_match", "", 4),
+                             "the old count was lost or given an invented source")
+            topic = conn.execute("SELECT summary, source FROM topics").fetchone()
+            self.assertEqual(topic["summary"], "a topic")
+            self.assertIsNone(topic["source"],
+                              "a row written before v6 must not claim a file")
+        finally:
+            conn.close()
+
+    def test_two_sources_can_now_hold_the_same_reason(self):
+        """The key is the point: one reason per file, not one reason in total."""
+        conn = db.open_db(self.db_path)
+        db.ensure_schema(conn)
+        db.note_unparsed(conn, "topic:no_match", 1, "/a/topics.md")
+        db.note_unparsed(conn, "topic:no_match", 1, "/b/topics.md")
+        db.forget_unparsed(conn, "/a/topics.md", "topic:")
+        conn.commit()
+        rows = {r["source"]: r["count"] for r in conn.execute(
+            "SELECT source, count FROM unparsed")}
+        self.assertEqual(rows, {"/b/topics.md": 1},
+                         "re-reading one file must not touch another's count")
+        conn.close()
+
+
 class FullRebuildSnapshotTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

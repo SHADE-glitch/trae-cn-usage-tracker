@@ -5,7 +5,7 @@
 | Python | 3.11–3.14 | `tomllib` and standard-library `unittest` are used |
 | Trae | Trae CN | International Trae is out of scope |
 | OS | Linux | Paths follow the Linux Trae CN layout; no network is required |
-| Database | SQLite 3 via Python stdlib | Tracker schema version is currently 5 (v2 rebuilt `models` per account and group; v3 added `credit_events`; v4 added `sessions.created_ts`, a *derived* creation second that never overwrites `last_ts`; v5 decoded each selection into `model`/`provider`/`third_party` and added the `credit_intervals`/`credit_alloc` estimate) |
+| Database | SQLite 3 via Python stdlib | Tracker schema version is currently 6 (v2 rebuilt `models` per account and group; v3 added `credit_events`; v4 added `sessions.created_ts`, a *derived* creation second that never overwrites `last_ts`; v5 decoded each selection into `model`/`provider`/`third_party` and added the `credit_intervals`/`credit_alloc` estimate; v6 keyed `unparsed` by `(reason, source)` and gave `topics` the `topics.md` it was read from, so a re-read replaces a file's rows and counts instead of merging into them) |
 | Headless CLI | stdlib only | `sync`, reports, export, health, backup and restore work without Textual |
 | TUI | Textual 8.2.x | `requirements.txt` pins `>=8.2,<9` |
 | Content storage | local SQLite, opt-out | `store_content=false` purges prose while retaining metadata |
