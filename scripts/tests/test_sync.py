@@ -25,7 +25,10 @@ Standard library only. Every case builds its fixtures under ``tempfile`` and ope
 there; ``_hermetic`` refuses the real ``usage.db`` if any of them slips.
 """
 
+import contextlib
+import io
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -1240,6 +1243,36 @@ class RunTest(Base):
         second = sync.run(db_path=self.tmp / "run.db", quiet=True, roots=roots)
         self.assertEqual(sum(second["results"].values()), 0,
                          f"an idempotent re-run still reported work: {second['results']}")
+
+
+class EntryPointSettingsTest(unittest.TestCase):
+    """A settings file the user has to fix is a message, not a traceback.
+
+    ``tcut sync` is the command the message tells the user to run, so it cannot be
+    the one that answers with a stack trace — and it must not leave an empty
+    database behind, which the next sync would read as "already indexed".
+    """
+
+    def test_a_broken_settings_file_is_one_line_and_a_non_zero_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "config.toml"
+            bad.write_text('top_n = "seven"\n', encoding="utf-8")
+            target = Path(tmp) / "x.db"
+            # CONFIG_PATH is resolved at import, so the module attribute is what a
+            # test has to move — the environment variable only reaches a child.
+            old_path = db.CONFIG_PATH
+            db.CONFIG_PATH = bad
+            try:
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rc = sync.main(["--db", str(target)])
+            finally:
+                db.CONFIG_PATH = old_path
+            self.assertEqual(rc, 2)
+            self.assertNotIn("Traceback", err.getvalue())
+            self.assertIn(str(bad), err.getvalue())
+            self.assertFalse(target.exists(),
+                             "a refused sync created the database it never indexed")
 
 
 if __name__ == "__main__":

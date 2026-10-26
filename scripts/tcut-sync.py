@@ -1317,7 +1317,13 @@ def main(argv=None) -> int:
                     help="snapshot then rebuild the index from scratch")
     ap.add_argument("--quiet", action="store_true", help="no progress output")
     args = ap.parse_args(argv)
-    run(db_path=args.db, full=args.full, quiet=args.quiet)
+    try:
+        run(db_path=args.db, full=args.full, quiet=args.quiet)
+    except db.ConfigError as exc:
+        # Same contract as the other entry points: name the file, exit non-zero,
+        # never start with defaults the user is not editing.
+        print(f"your settings are not usable: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

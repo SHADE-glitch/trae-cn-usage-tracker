@@ -454,6 +454,11 @@ def main(argv=None) -> int:
     conn = db.open_db(path, readonly=readonly)
     try:
         return fn(conn, args) or 0
+    except db.ConfigError as exc:
+        # A settings file the user has to fix. The exception already names the
+        # path; a traceback would bury it under the reader's own internals.
+        print(f"your settings are not usable: {exc}", file=sys.stderr)
+        return 2
     except sqlite3.Error as exc:
         print(f"database error: {exc}", file=sys.stderr)
         return 1

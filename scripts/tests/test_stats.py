@@ -514,6 +514,33 @@ class CommandTest(CliBase):
                          "the schema version is the one thing a consumer must be able to see")
 
 
+class BrokenSettingsTest(CliBase):
+    """A settings file the user has to fix is a message, not a traceback.
+
+    ``ConfigError`` carries the path and the bad value; a traceback buries both
+    under the reader's internals, and exiting 0 would say the report was fine.
+    """
+
+    def _bad_config(self):
+        path = self.dir / "config.toml"
+        path.write_text('top_n = "seven"\n', encoding="utf-8")
+        return path
+
+    def test_a_broken_settings_file_is_one_line_and_a_non_zero_exit(self):
+        bad = self._bad_config()
+        rc, out = self.run_cli("sessions", env=clean_env(TCUT_CONFIG=str(bad)))
+        self.assertEqual(rc, 2, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn(str(bad), out, "the message does not name the file to fix")
+        self.assertIn("top_n", out)
+
+    def test_a_broken_environment_value_is_reported_the_same_way(self):
+        rc, out = self.run_cli("sessions", env=clean_env(TCUT_TOP_N="lots"))
+        self.assertEqual(rc, 2, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("TCUT_TOP_N", out)
+
+
 class NoDefaultSubcommandTest(CliBase):
     def test_bare_invocation_is_stats(self):
         """No subcommand must not be a usage error: it is the common case."""
