@@ -962,10 +962,16 @@ if HAVE_TEXTUAL:
                 body.mount(Horizontal(Static(label, classes="sess-label"),
                                       Static(value, classes="sess-value")))
             cap = self.app.DETAIL_LIMIT
-            self._mount_list(body, "actions", [a["text"] for a in actions[:cap]])
-            self._mount_list(body, "learned", [a["text"] for a in learned[:cap]])
+            # The total is passed through so a cut list can say it was cut: a
+            # screen showing 200 of 900 items looked exactly like a screen
+            # showing all 200.
+            self._mount_list(body, "actions", [a["text"] for a in actions[:cap]],
+                             len(actions))
+            self._mount_list(body, "learned", [a["text"] for a in learned[:cap]],
+                             len(learned))
             self._mount_list(body, "topics",
-                             [f"{ts(t['ts'])}  {t['summary']}" for t in topics[:cap]])
+                             [f"{ts(t['ts'])}  {t['summary']}" for t in topics[:cap]],
+                             len(topics))
 
         @staticmethod
         def _summary_rows(row, models=(), credits=()):
@@ -1016,14 +1022,22 @@ if HAVE_TEXTUAL:
             return rows
 
         @staticmethod
-        def _mount_list(body, heading: str, items) -> None:
-            """Mount a titled bullet list, or nothing when it is empty."""
+        def _mount_list(body, heading: str, items, total=None) -> None:
+            """Mount a titled bullet list, or nothing when it is empty.
+
+            ``total`` is how many the session actually has; when it is larger
+            than what was mounted, the list ends with the count it left out.
+            """
             items = [i for i in items if i]
             if not items:
                 return
             body.mount(Static(f"[b]{heading}[/b]", classes="sess-heading"))
             for text in items:
                 body.mount(Static(f"  • {text}", classes="sess-item"))
+            if total is not None and total > len(items):
+                body.mount(Static(
+                    f"  … showing {len(items)} of {total} (detail_limit)",
+                    classes="sess-item"))
 
     class EntityScreen(WideTableMixin, Screen):
         """The sessions behind one project, agent or model.
@@ -1999,8 +2013,11 @@ if HAVE_TEXTUAL:
             try:
                 s = db.q_usage_summary(conn, start, end)
                 credits = db.q_credit_summary(conn, start, end)
-                self._render_usage_panels(s, credits)
-                self._fill_usage_logs(conn, start, end)
+                # The table is filled first so the note above it can say how much
+                # of the window it is showing; a capped list that reads like the
+                # whole window is the same defect as a zero that means "unknown".
+                shown, total = self._fill_usage_logs(conn, start, end)
+                self._render_usage_panels(s, credits, shown, total)
             except sqlite3.Error as exc:
                 # e.g. an un-migrated DB where a newer column is missing.
                 self._report_query_error(exc)
@@ -2012,7 +2029,9 @@ if HAVE_TEXTUAL:
                     conn.close()
             self._apply_responsive_layout()
 
-        def _render_usage_panels(self, s: dict, credits: dict) -> None:
+        def _render_usage_panels(self, s: dict, credits: dict,
+                                 shown: int | None = None,
+                                 total: int | None = None) -> None:
             top = s.get("top_model") or {}
             self._put_panel("#sum-sessions", "Sessions", f"{s['sessions']:,}")
             self._put_panel("#sum-projects", "Projects",
@@ -2048,12 +2067,22 @@ if HAVE_TEXTUAL:
                 # the `~` on any time in the table below refers to exactly these.
                 note += (f" · {db.count_n(s['unmeasured'], 'session')} with no"
                          f" measured time, dated from the session id (~)")
+            if shown is not None and total is not None and shown < total:
+                note += (f" · showing {shown:,} of {total:,} rows — raise"
+                         " `log_limit` for more")
             self.query_one("#usage-note", Static).update(note)
 
-        def _fill_usage_logs(self, conn, start, end) -> None:
-            """The window's (session, model selection) rows, newest first."""
+        def _fill_usage_logs(self, conn, start, end):
+            """The window's (session, model selection) rows, newest first.
+
+            Returns ``(shown, total)`` so the caller can say how much of the
+            window the table holds; the count is only asked for when the cap was
+            actually reached.
+            """
             found = db.q_usage_rows(conn, limit=self.USAGE_LOG_LIMIT,
                                     start_ts=start, end_ts=end)
+            total = (db.q_usage_row_count(conn, start, end)
+                     if len(found) >= self.USAGE_LOG_LIMIT else len(found))
             rows = [[
                 f"{db.derived_mark(r['derived_ts'])}{ts(r['shown_ts'])}",
                 r["session_id"],
@@ -2071,6 +2100,7 @@ if HAVE_TEXTUAL:
                 key_index=(0, 1, 2), key_kind="session",
                 key_rows=[[r["session_id"], r["agent_label"], r["model_id"]]
                           for r in found])
+            return len(found), total
 
         # --- Dashboard page ------------------------------------------------
 

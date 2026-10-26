@@ -1360,6 +1360,20 @@ def q_model_credits(conn, start_ts=None, end_ts=None):
     return out
 
 
+def q_usage_row_count(conn, start_ts=None, end_ts=None) -> int:
+    """How many rows :func:`q_usage_rows` would return without its limit.
+
+    A capped list has to be able to say "showing 1 of 900"; counting the visible
+    rows instead would report the cap as the total.
+    """
+    conds = _time_conds(start_ts, end_ts, col=SESSION_TIME_S)
+    where = (" WHERE " + " AND ".join(c for c, _ in conds)) if conds else ""
+    return conn.execute(
+        "SELECT COUNT(*) FROM sessions s"
+        " LEFT JOIN session_models sm ON sm.session_id = s.session_id" + where,
+        [p for _, p in conds]).fetchone()[0]
+
+
 def q_usage_rows(conn, limit=None, start_ts=None, end_ts=None):
     """The Usage page: one row per (session, model selection) in the window.
 

@@ -593,6 +593,45 @@ class RegistryGuardTest(unittest.TestCase):
 
 
 
+class TruncationDisclosureTest(TuiBase):
+    """A list that shows a slice of its rows must say so.
+
+    Both caps were silent: the Usage page cut at ``log_limit`` and the session
+    detail cut every list at ``detail_limit``, so a screen that showed 100 of
+    900 looked exactly like a screen that showed all 100.
+    """
+
+    def test_the_usage_page_says_how_many_rows_it_is_showing(self):
+        async def go():
+            app = self.app(config={**tui.db.DEFAULTS, "log_limit": 1})
+            async with app.run_test(size=(140, 45)) as pilot:
+                host = app.screen
+                host.query_one(TabbedContent).active = "tab-usage"
+                await pilot.pause()
+                table = host.query_one("#t-usage", DataTable)
+                return (table.row_count,
+                        str(host.query_one("#usage-note", Static).render()))
+        shown, note = run(go())
+        self.assertEqual(shown, 1, "the fixture no longer has more rows than the cap")
+        self.assertIn("showing 1 of 2", note,
+                      "the Usage page cut its rows without saying so")
+
+    def test_a_cut_detail_list_names_the_total_it_kept(self):
+        self._insert("INSERT INTO session_actions(session_id, idx, text)"
+                     " VALUES('aaaaaaaaaaaa1111',1,'did another'),"
+                     "        ('aaaaaaaaaaaa1111',2,'and another')")
+
+        async def go():
+            app = self.app(config={**tui.db.DEFAULTS, "detail_limit": 2})
+            async with app.run_test(size=(140, 45)) as pilot:
+                app.push_screen(tui.SessionScreen("aaaaaaaaaaaa1111"))
+                await pilot.pause()
+                return [str(w.render()) for w in app.screen.query(".sess-item")]
+        items = run(go())
+        self.assertTrue(any("showing 2 of 3" in text for text in items),
+                        f"the action list was cut without saying so: {items}")
+
+
 class DashboardPanelTest(TuiBase):
     """The two Dashboard panels that survived the cut back to cbut's tab set.
 
