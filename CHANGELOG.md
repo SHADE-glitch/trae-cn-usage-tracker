@@ -333,3 +333,216 @@ Change   The reference now carries the full ~/.agents/standards/STANDARD.md path
 Evidence 2026-10-19: python3 -m unittest discover -s scripts/tests — 254 tests, OK.
 Cost     None; wording only.
 Commit   df18129
+
+### D-018 · 2026-10-26 · fix
+Symptom  The `memory` table was emptied on every scan and then only the documents whose size or
+         mtime had changed were re-read, so the first sync filled it and every later sync of the
+         30-second timer left it empty for good. `tcut memory` answered "run `tcut sync`" — the
+         one command that kept it empty — and `overview.memory_docs` read 0 over a full table.
+Change   Replace per document instead of clearing per run: each changed document drops its own
+         rows and writes the current paragraphs, and a scope the scan did not see is a deleted
+         document whose rows go with it. `store_content = false` still purges the whole table.
+Evidence L0 2026-10-26 `test_sync.py::MemoryDocsTest::test_a_second_run_keeps_the_documents_it_did_not_reread`
+         fails before the change with `[] != [('project:-p--p2-a', 0, 'project line'), …]` and passes
+         after; `test_a_deleted_document_takes_its_paragraphs_with_it` holds the other half, and
+         `RunTest::test_a_second_run_indexes_nothing_new` still reports 0 for an unchanged tree.
+Cost     A run now enumerates every document to find the deleted ones — it already did — and a
+         document is identified by its scope, so a project key that changes hands leaves the old
+         scope to the deletion pass rather than being overwritten in place.
+Commit   0eaa6e6
+
+### D-019 · 2026-10-26 · fix
+Symptom  `topics` was only ever upserted, so a line the model withdrew stayed indexed for good, and
+         `unparsed` was keyed by the reason alone, so every whole-file re-read added a second copy
+         of the same bad record: one unparseable line in a `topics.md` reported three unparsed
+         records after three edits, and `_scan_mcps` re-reads its tree on every sync, so
+         `mcp:bad_metadata` grew once per run. The docstring already promised "once per reason per
+         file"; the table had no place to put the file.
+Change   Schema **v6**: `unparsed` is keyed by `(reason, source)` (rebuilt, old counts kept under
+         an empty source) and `topics` gains the `topics.md` a line came from. A handler that
+         re-reads a whole source calls `db.forget_unparsed(conn, source, prefix…)` first, and
+         `_ingest_topics` deletes that file's rows before writing them. Streamed sources pass
+         their path too, and forget it when a shrunk or rotated file is re-read from zero.
+Evidence L0 2026-10-26 `test_sync.py::TopicsTest::test_a_removed_line_stops_being_indexed`
+         (`['gone', 'kept'] != ['kept']` before) and
+         `test_a_bad_line_is_counted_once_however_often_the_file_is_reread` (`3 != 1` before).
+         `test_snapshots.py::PerSourceMigrationTest` holds the v5→v6 upgrade to keeping every row
+         and to two sources holding the same reason, and the schema-version guard in
+         `test_maintenance_docs.py` pins `compatibility.md` to v6.
+Cost     A schema version, and `unparsed` rows written before v6 cannot name their file — they are
+         kept with an empty source rather than guessed at. Two concepts now share one table by
+         `(reason, source)`, so `q_unparsed` sums and `overview.unparsed_kinds` counts distinct
+         reasons instead of rows.
+Commit   d7f06dc
+
+### D-020 · 2026-10-26 · fix
+Symptom  `scan_state_vscdb` wrote the file's cursor even after the read raised, and the cursor is
+         the file's size and mtime — so a workspace database that could not be opened was recorded
+         as indexed and every later sync skipped it. Its prompts and its model catalog never
+         arrived, and the only trace was one `vscdb:read_failed` that a retry never repeated.
+Change   Advance the cursor only when `_ingest_vscdb` returned; a failed read is retried on the
+         next sync, the way `scan_credit_logs` already behaved.
+Evidence L0 2026-10-26 `test_sync.py::VscdbTest::test_a_failed_read_does_not_advance_the_cursor`
+         fails before with `1 != 0` on the cursor row and passes after.
+Cost     A permanently unreadable database is re-attempted every 30 seconds and counted each time;
+         that is the cost of not silently dropping a source, and the count is now per file (D-019).
+Commit   6df13ce
+
+### D-021 · 2026-10-26 · fix
+Symptom  The memory folder's midnight was written into `first_ts` and `last_ts` — the two columns
+         that mean "Trae measured activity here". A day-name guess therefore printed with no `~`,
+         was never counted in `q_kpi["unmeasured"]`, and won its `COALESCE` forever: a summary
+         that moved to another day folder kept the first guess, and the window of the day it now
+         belonged to excluded the session.
+Change   The day stays in `sessions.day`; `first_ts`/`last_ts` are written only by `finalize`
+         from snapshot tag times. A session with no tag is undated and prints as derived.
+         `AGENTS.md` and the `SESSION_TIME` comment now say that, and the schema says it per column.
+Evidence L0 2026-10-26 `test_sync.py::FinalizeTest::test_a_day_directory_is_a_day_not_a_measured_time`
+         (fails with `1772553600000 is not None` before) and
+         `test_a_summary_that_moves_to_another_day_follows_its_day`. `FinalizeTest`'s existing case
+         still proves a tag beats the empty column.
+Cost     Sessions that used to show a day-shaped timestamp now show `~` and count as unmeasured —
+         which is what they are. Measured 2026-10-26 on a copy of this machine's live index: 28 of
+         50 sessions had no `last_ts`, and the other 22 were dated by their day folder alone (89 of
+         90 turn times were NULL, so nothing else could date them).
+Commit   e97c801
+
+### D-022 · 2026-10-26 · fix
+Symptom  Cursors record that a file was read, never which parser read it, so a repaired decoder only
+         ever applied to files that changed afterwards. Measured 2026-10-26 on this machine's live
+         index: `turns.ts` NULL in 89 of 90 rows, `toolcall_events.ts` NULL in 139 of 148,
+         `unparsed` empty and `tcut health` green — every one of those rows was written by the
+         pre-D-002 parser, and only `--full` could repair them.
+Change   `PARSER_VERSION` is stamped in `meta`; when the stored generation differs, `run()` drops
+         every cursor once so each source is re-read (the handlers replace rather than merge, so
+         this is idempotent), and `tcut health` names a stale index until that sync runs.
+Evidence L0 2026-10-26 `test_sync.py::RunTest::test_a_parser_generation_change_reindexes_what_the_old_one_wrote`
+         fails before with `None != 1700000000000` on `turns.ts`, and proves the pass after it is
+         incremental again; `test_stats.py::HealthTest` holds both the stale and the current line.
+         L2 2026-10-26 on a **copy** of the live v5 index, one incremental sync: `turns` 90/90 and
+         `toolcall_events` 148/148 dated (was 89 and 139 NULL), `schema_version` 6,
+         `parser_version` 2, `unparsed` 0, and 25 of 50 sessions carrying a measured time where 22
+         had been dated by a day folder. The live database itself was not touched.
+Cost     One full re-read per parser generation, including sources the change did not touch — the
+         alternative is a per-source version table that nobody remembers to bump. The invalidation
+         is a cursor drop, not a rebuild: no snapshot, no table dropped.
+Commit   ac119c7
+
+### D-023 · 2026-10-26 · fix
+Symptom  `tcut sync` and every reporting subcommand called `db.load_config()` outside any handler,
+         so a malformed `config.toml` or a bad `TCUT_*` value answered with a traceback — the TUI
+         was the only entry point that had ever turned `ConfigError` into a message. A refused
+         sync could also leave an empty database behind for the next run to read as indexed.
+Change   Both headless entry points catch `ConfigError`, print the one line the exception already
+         carries (it names the path or the variable) and exit 2, matching `tcut-tui.py`.
+Evidence L0 2026-10-26 `test_stats.py::BrokenSettingsTest` (file and environment) fails before with
+         `ConfigError` escaping the child, and `test_sync.py::EntryPointSettingsTest` fails the same
+         way in-process while also asserting no database file was created.
+Cost     Exit code 2 now means "your settings", on three entry points instead of one; the message
+         is the exception's own text, so it stays in step with the loader.
+Commit   e097add
+
+### D-024 · 2026-10-26 · fix
+Symptom  `tcut stats` printed the catalog count twice — "models" on the prompts line and "models" on
+         the credit line — and the same word carried the count of models a session had actually
+         selected: 291 above and 9 below on one TUI screen (status bar against the Tokens/Usage
+         panel), with nothing to tell the reader which was which.
+Change   The catalog count is named `catalog`/`catalog models`, the selected-model count is
+         "Models used" in both panels, and the status line says "catalog models". One number per
+         word.
+Evidence L0 2026-10-26 `test_stats.py::CommandTest::test_stats_names_the_catalog_once_and_never_prints_two_model_counts`
+         fails before with `2 != 1` occurrences of "models", and
+         `test_tui.py::DashboardPanelTest::test_a_catalog_count_and_a_used_count_never_share_one_word`
+         holds the two labels apart.
+Cost     Two labels get longer ("catalog models" in the status bar, "Models used" in a panel whose
+         label column is 12 cells — it fits, but a third word would not).
+Commit   f942459
+
+### D-025 · 2026-10-26 · fix
+Symptom  `tcut credits --limit N` summed the rows the limit left visible, so asking for fewer lines
+         lowered the reported spend: the same database reported "at least 94.0244 credits spent"
+         unrestricted and "at least 10" with `--limit 1`.
+Change   Read the whole series and print a slice of it; the total is the series' own, and the line
+         says "showing the newest N" when it is showing fewer rows than it counted.
+Evidence L0 2026-10-26 `test_stats.py::CommandTest::test_credits_total_does_not_shrink_with_the_limit`
+         fails before with `'10' != '94.0244'` and passes after.
+Cost     `tcut credits` reads every balance observation even when it prints one; the series is one
+         row per app start, so this stays cheap, and the alternative — a total that depends on a
+         display flag — is a number nobody can quote.
+Commit   f942459
+
+### D-026 · 2026-10-26 · fix
+Symptom  The date picker is the second way into every windowed tab and nothing tested it. Its All
+         time chip — and the picker prefilled on All time — left "end follows now" ticked, so
+         confirming produced `[all, now]` instead of the preset `db.window_bounds` defines as
+         having neither bound. A window ending at now silently drops every row with no timestamp:
+         measured 2026-10-26, 28 of this machine's 50 sessions. Confirm also refused a blank start
+         with a blank end, so the picker could not express all time at all.
+Change   A preset follows the clock only when it has a live end; the picker's all-time window lands
+         on the `all` preset, so the two ways in cannot drift; and `db.window_label` can print a
+         window with neither bound ("all time") instead of dividing `None` by 1000.
+Evidence L0 2026-10-26 `test_tui.py::DateRangePickerTest` — the chip case fails before with
+         `(None, None, True) != (None, None, False)`, the prefill case the same, and the app-level
+         case returns `'7d'` instead of `'all'`; `test_stats.py::RenderingTest` holds the label.
+Cost     "All time" from the picker is stored as the preset, so a later change to the preset's
+         bounds reaches both entry points — which is the point, and also means the picker can no
+         longer produce "everything up to now" by clearing the start; that needs a fixed end.
+Commit   ff71a97
+
+### D-027 · 2026-10-26 · fix
+Symptom  The end card's "23:59" chip wrote 23:59:00 into a window whose upper bound is exclusive, so
+         picking the end of the day dropped everything between 23:59:00 and 23:59:59.999 — the last
+         minute of the day it named.
+Change   The chip reads `24:00` and writes the next midnight into the end card (moving the card's
+         date with it), which is the same instant written where a right-open window can include it.
+Evidence L0 2026-10-26 `test_tui.py::DateRangePickerTest::test_the_end_of_day_chip_includes_the_last_minute`
+         fails before with `1700063940000 != 1700064000000` (23:59:00 against the next midnight).
+Cost     The end card can now show a date one day past the start date's day, which is what "the end
+         of that day" means in a half-open interval; `24:00` is the label for it.
+Commit   b71d0a6
+
+### D-028 · 2026-10-26 · fix
+Symptom  In the entity drill-down (a project, an agent, a session list) the model, route and credit
+         cells were a hard-coded `-`, so a session Trae had a selection for read as unknown and the
+         estimate the balance split had already computed was dropped on the one list that shows
+         the session.
+Change   `q_sessions` joins the same selection the model column always used (agent before
+         solo_agent, then by label) and returns its decoded `model`, `provider`, `third_party` and
+         the session's whole estimated share; the row prints them and `-` means unknown again.
+Evidence L0 2026-10-26 `test_tui.py::DrillDownTest::test_the_drill_down_prints_the_selection_it_knows_instead_of_a_dash`
+         fails before with the raw id in the model cell and `-` in the other two.
+         `StructureTest::test_the_drill_down_reads_the_recorded_model_and_never_a_guess` now expects
+         the decoded name for the recorded selection and still expects `-` for the session with none.
+Cost     `q_sessions` carries four more columns and one join; every caller that ignores them pays
+         for a subquery over `credit_alloc` it does not read.
+Commit   8df94ff
+
+### D-029 · 2026-10-26 · fix
+Symptom  The Usage table cut at `log_limit` and the session detail cut every list at
+         `detail_limit` without a word, so a screen showing 100 of 900 rows looked exactly like a
+         screen showing all 100 — the same defect as a zero that means "unknown".
+Change   The Usage note ends with "showing N of M rows — raise `log_limit` for more" (the count is
+         only queried when the cap was reached), and a cut detail list ends with
+         "showing N of M (detail_limit)".
+Evidence L0 2026-10-26 `test_tui.py::TruncationDisclosureTest` — both cases fail before (the note
+         lacks the sentence; the action list shows 2 of 3 with no marker).
+Cost     One extra `COUNT(*)` per Usage refresh, and only while the table is actually capped; the
+         note gains a sentence that is absent whenever nothing was hidden.
+Commit   8a9e8b5
+
+### D-030 · 2026-10-26 · fix
+Symptom  D-002's Evidence claims a real sync left "turns 89/89 and toolcalls 139/139 dated". On this
+         machine's live index that is not true today: measured 2026-10-26, `turns.ts` is NULL in 89
+         of 90 rows and `toolcall_events.ts` in 139 of 148, with `unparsed` empty and `health`
+         green. Both statements are correct about their own moment: those rows were written by the
+         pre-fix parser, and a cursor then told every later sync the repositories were done.
+Change   Record the correction here rather than editing D-002 — an entry states what was true as of
+         its commit. The repair is D-022: a parser-generation mismatch now drops the cursors, so an
+         incremental sync re-reads the repositories. A new database, or `--full`, never showed the
+         symptom, which is why D-002's measurement was reproducible then and is not now.
+Evidence L2 2026-10-26 the live index queried read-only (`turns` 90 rows / 89 NULL, `toolcall_events`
+         148 / 139 NULL, `unparsed` 0, `meta.schema_version` 5, no `parser_version`).
+         L0 `test_sync.py::RunTest::test_a_parser_generation_change_reindexes_what_the_old_one_wrote`
+         rebuilds exactly that state and shows the next sync repairing it.
+Cost     None; the record now says which of its own numbers depended on how the index was built.
+Commit   ac119c7

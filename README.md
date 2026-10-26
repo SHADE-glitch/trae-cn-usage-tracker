@@ -311,7 +311,7 @@ database.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 261 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 287 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual` installed —
@@ -323,13 +323,13 @@ the import allowlist that keeps it that way).
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `test_sync.py` | 55 | the source readers (session memory JSONL, topic lines, memory prose, snapshot git tags, the agent `state.vscdb`, the inventory trees, the renderer log), incremental vs `--full` re-sync, the `models` composite key, credential-sentinel proof, unparsed accounting |
-| `test_tui.py` | 33 | tab wiring and report shapes through Textual's own `run_test` harness, per-tab ranges, the column plan, empty states, the responsive layout, the status line as it is actually rendered, and the Tokens route table's `3P` / token / estimate cells with their drill-down |
-| `test_stats.py` | 38 | the headless CLI end to end: a real `main([...])` per subcommand, `--db` before and after, `export` / `inventory` / `show` / `health`, `backup`→`restore`, the generated `format` surface, and the empty-state notices |
+| `test_sync.py` | 64 | the source readers (session memory JSONL, topic lines, memory prose, snapshot git tags, the agent `state.vscdb`, the inventory trees, the renderer log), incremental vs `--full` re-sync, the `models` composite key, credential-sentinel proof, unparsed accounting |
+| `test_tui.py` | 41 | tab wiring and report shapes through Textual's own `run_test` harness, per-tab ranges, the column plan, empty states, the responsive layout, the status line as it is actually rendered, and the Tokens route table's `3P` / token / estimate cells with their drill-down |
+| `test_stats.py` | 45 | the headless CLI end to end: a real `main([...])` per subcommand, `--db` before and after, `export` / `inventory` / `show` / `health`, `backup`→`restore`, the generated `format` surface, and the empty-state notices |
 | `test_config.py` | 21 | the settings layer: defaults against the TUI's own constants, file, environment precedence and bounds, a broken file that names its path, and every knob a renderer actually reads |
 | `test_maintenance_docs.py` | 20 | the generated format doc cannot drift from the code, every maintenance asset is reachable from the router, and no document may state a CI version the workflow does not run |
 | `test_usage.py` | 19 | the per-session tool-call aggregation and its window, the Usage summary panels' totals, the credit series' `spent ≥` lower bound, and the v5 decode: built-in vs 3P, per-route credit allocation, and one Usage row per model selection |
-| `test_snapshots.py` | 14 | automatic snapshots before destructive steps, listing, restore, retention |
+| `test_snapshots.py` | 16 | automatic snapshots before destructive steps, listing, restore, retention |
 | `test_privacy.py` | 11 | the import allowlist plus the calls that bypass it (`__import__` / `eval` / `import_module`), a fingerprint proving Trae's own tree is untouched, the `store_content` sentinel scan across every text column, and the model-credential scan |
 | `test_format_registry.py` | 10 | the Trae CN format registry and the parser agree, both directions |
 | `test_hermetic.py` | 13 | a runtime tripwire: the suite never opens the real `usage.db` or reads the real Trae host dirs, in-process or through a child |

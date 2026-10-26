@@ -285,7 +285,7 @@ SQLite**。设置 `store_content = false` 后保留元数据并删除全部这�
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 261 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 287 tests ... OK
 ```
 
 测试套件是纯 `unittest`（`pytest` 也能发现它们）。其中两个需要装 `textual`：`test_tui.py`，以及
@@ -296,13 +296,13 @@ python3 -m unittest discover -s scripts/tests     # Ran 261 tests ... OK
 
 | 套件 | 用例 | 覆盖什么 |
 |---|---:|---|
-| `test_sync.py` | 55 | 各个源读取器（会话 memory JSONL、主题行、记忆散文、快照 git tag、agent 的 `state.vscdb`、清单目录树、renderer log）、增量与 `--full` 重建、`models` 复合主键、凭证哨兵证明、unparsed 记账 |
-| `test_stats.py` | 38 | 无头 CLI 端到端：每个子命令真实 `main([...])`、`--db` 放前后、`export` / `inventory` / `show` / `health`、`backup`→`restore`、生成的 `format` 面、空态提示 |
-| `test_tui.py` | 33 | 通过 Textual 自己的 `run_test` 测试 tab 接线与报表形状、按 tab 的范围、列计划、空态、响应式布局、状态行**实际渲染**出来的样子，以及 Tokens 路由表的 `3P` / token / 估算单元格与下钻 |
+| `test_sync.py` | 64 | 各个源读取器（会话 memory JSONL、主题行、记忆散文、快照 git tag、agent 的 `state.vscdb`、清单目录树、renderer log）、增量与 `--full` 重建、`models` 复合主键、凭证哨兵证明、unparsed 记账 |
+| `test_stats.py` | 45 | 无头 CLI 端到端：每个子命令真实 `main([...])`、`--db` 放前后、`export` / `inventory` / `show` / `health`、`backup`→`restore`、生成的 `format` 面、空态提示 |
+| `test_tui.py` | 41 | 通过 Textual 自己的 `run_test` 测试 tab 接线与报表形状、按 tab 的范围、列计划、空态、响应式布局、状态行**实际渲染**出来的样子，以及 Tokens 路由表的 `3P` / token / 估算单元格与下钻 |
 | `test_config.py` | 21 | 设置层：默认值与 TUI 自身常量对齐、文件、环境变量优先级与边界、坏掉的配置文件报出路径，以及每个旋钮真的被某个渲染器读到 |
 | `test_maintenance_docs.py` | 20 | 生成的 format 文档不能与代码漂移、维护资产都能从路由页到达、任何文档都不得声称 workflow 没跑的 CI 版本 |
 | `test_usage.py` | 19 | 按会话的工具调用聚合及其窗口、Usage 摘要面板的合计、credit 序列的 `spent ≥` 下界，以及 v5 解码：内置 / 3P、按路由分摊 credit、每个模型选择一行 Usage |
-| `test_snapshots.py` | 14 | 破坏性步骤前的自动快照、列出、恢复、保留策略 |
+| `test_snapshots.py` | 16 | 破坏性步骤前的自动快照、列出、恢复、保留策略 |
 | `test_privacy.py` | 11 | import 白名单以及绕过它的调用（`__import__` / `eval` / `import_module`）、证明 Trae 自己的目录树未被写入的指纹、`store_content` 哨兵扫描每一列文本、模型凭证扫描 |
 | `test_format_registry.py` | 10 | Trae CN 格式登记表与解析器双向一致 |
 | `test_hermetic.py` | 13 | 运行时绊线：本套件从不打开真实的 `usage.db`，也不读取真实 Trae 主机目录，进程内和子进程都受守卫 |
