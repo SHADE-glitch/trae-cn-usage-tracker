@@ -624,6 +624,30 @@ class VscdbTest(Base):
         self.assertEqual(self.one(
             "SELECT COUNT(*) c FROM sessions WHERE session_id='sess2'")["c"], 1)
 
+    def test_a_failed_read_does_not_advance_the_cursor(self):
+        """A read that raised must be retried, not recorded as already indexed.
+
+        The cursor is written from the file's size and mtime, so writing it after
+        a failure told every later sync that a file it could not read had been
+        read — the prompts and the catalog stayed missing with no trace.
+        """
+        ws = self.tmp / "User" / "workspaceStorage" / "ws1"
+        ws.mkdir(parents=True, exist_ok=True)
+        path = ws / "state.vscdb"
+        broken = sqlite3.connect(path)
+        broken.execute("CREATE TABLE SomethingElse (key TEXT)")
+        broken.commit()
+        broken.close()
+
+        sync.scan_state_vscdb(self.conn, cfg())
+        self.conn.commit()
+        cursor = self.one("SELECT COUNT(*) c FROM sync_state WHERE source = ?",
+                          (str(path),))["c"]
+        self.assertEqual(cursor, 0,
+                         "a failed read left a cursor telling the next sync to skip the file")
+        self.assertIn("vscdb:read_failed",
+                      {r["reason"] for r in db.q_unparsed(self.conn)})
+
     def test_store_content_off_keeps_agents_models_and_the_session_list(self):
         self._vscdb("ws1", {
             "icube-ai-agent-storage-input-history": [{"inputText": "secret prompt"}],

@@ -638,15 +638,20 @@ def scan_state_vscdb(conn, cfg) -> int:
             db.note_unparsed(conn, "vscdb:open_failed", 1, str(path))
             continue
         conn2.row_factory = sqlite3.Row
+        read = True
         try:
             rows += _ingest_vscdb(conn, conn2, workspace, cfg["store_content"],
                                   source=str(path))
         except sqlite3.Error:
+            # No cursor on a failed read: the file was not indexed, and recording
+            # it as indexed would make every later sync skip it for good.
+            read = False
             db.note_unparsed(conn, "vscdb:read_failed", 1, str(path))
         finally:
             conn2.close()
-        size, mtime, _ = changed
-        _set_cursor(conn, str(path), size, mtime, 0)
+        if read:
+            size, mtime, _ = changed
+            _set_cursor(conn, str(path), size, mtime, 0)
     return rows
 
 
