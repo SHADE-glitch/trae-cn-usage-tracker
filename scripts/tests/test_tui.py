@@ -172,7 +172,9 @@ class StructureTest(TuiBase):
         """The model column moved to `EntityScreen` with the Sessions tab.
 
         The guard is the same one: a session Trae recorded no selection for must
-        read as unknown, not as the agent's default model. Cells are read by
+        read as unknown, not as the agent's default model. The recorded one is
+        shown by its decoded name, as every other model column is; a session with
+        no decode falls back to the raw id it was recorded as. Cells are read by
         position, not ``get_cell(index, label)`` — this Textual release keys cells
         by RowKey, and a row index raises instead of reading.
         """
@@ -195,7 +197,7 @@ class StructureTest(TuiBase):
                 pos = [str(c.label) for c in entity.columns.values()].index("model")
                 return [str(entity.get_row_at(i)[pos])
                         for i in range(entity.row_count)]
-        for agent, want in (("builder", ["agent_1__Model X_null"]),
+        for agent, want in (("builder", ["Model X"]),
                             ("reviewer", ["-"])):
             with self.subTest(agent=agent):
                 self.assertEqual(run(go(agent)), want,
@@ -371,6 +373,31 @@ class DrillDownTest(TuiBase):
         self.assertEqual(name, "EntityScreen")
         self.assertEqual([r[1] for r in rows], ["aaaaaaaaaaaa"],
                          "the agent filter returned someone else's sessions")
+
+    def test_the_drill_down_prints_the_selection_it_knows_instead_of_a_dash(self):
+        """A project or agent drill-down knows the session model and estimate.
+
+        The route and credit cells were the literal "-" on that screen, so a
+        session Trae had a selection for — and that the balance split covered —
+        read as unknown in the one list that shows it.
+        """
+        self._insert(
+            "INSERT INTO credit_alloc(session_id, agent_label, model_id,"
+            " start_ts, credits) VALUES('aaaaaaaaaaaa1111','agent',"
+            " 'agent_1__Model X_null',1700000000000,12.5)")
+
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(140, 45)) as pilot:
+                await self._open(pilot, "tab-agents", "t-agents", want_cell="builder")
+                table = app.screen.query_one("#t-entity", DataTable)
+                return [str(c) for c in table.get_row_at(0)]
+
+        row = run(go())
+        self.assertEqual(row[5], "Model X", "the drill-down hid a recorded selection")
+        self.assertEqual(row[6], "Built-in",
+                         "the route column did not follow the selection")
+        self.assertEqual(row[7], "12.50", "the credit estimate was not read for the row")
 
     def test_a_session_inside_the_drill_down_still_opens_its_detail(self):
         async def go():

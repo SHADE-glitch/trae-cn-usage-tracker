@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     turns      INTEGER DEFAULT 0,
     toolcalls  INTEGER DEFAULT 0,
     first_ts   INTEGER,          -- epoch ms, measured: snapshot tag times only
-    last_ts    INTEGER,          -- the memory folder's day is `day`, not this
+    last_ts    INTEGER,          -- the memory folder's day is the day column
     created_ts INTEGER           -- epoch ms *derived* from the session id, never
                                  -- written into first_ts/last_ts; see time_text
 );
@@ -1046,7 +1046,10 @@ def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
     outcome are prose and are returned as stored (NULL when ``store_content``
     is off). ``model_id`` is the session's ``agent`` selection where Trae recorded
     one, else its ``solo_agent`` selection, else NULL — Trae keeps only the current
-    choice per session, never a history of switches.
+    choice per session, never a history of switches. ``model``/``provider``/
+    ``third_party`` are that same selection's decoded route, and ``credits`` is
+    the session's whole estimated share (NULL when no balance interval covers it),
+    so a drill-down can print them rather than a dash.
     """
     conds = _entity_conds(start_ts, end_ts, project, agent, model_id,
                           model=model, provider=provider)
@@ -1057,16 +1060,27 @@ def q_sessions(conn, limit=None, start_ts=None, end_ts=None, project=None,
         " s.created_ts,"
         f" {SESSION_TIME_S} AS shown_ts,"
         " CASE WHEN s.last_ts IS NULL THEN 1 ELSE 0 END AS derived_ts,"
-        " (SELECT sm.model_id FROM session_models sm"
-        "   WHERE sm.session_id = s.session_id"
-        "   ORDER BY CASE sm.agent_label WHEN 'agent' THEN 0"
-        "            WHEN 'solo_agent' THEN 1 ELSE 2 END, sm.agent_label"
-        "   LIMIT 1) AS model_id,"
+        " sm.model_id, sm.model, sm.provider,"
+        " COALESCE(sm.third_party, 0) AS third_party,"
+        " (SELECT SUM(ca.credits) FROM credit_alloc ca"
+        "   WHERE ca.session_id = s.session_id) AS credits,"
         " (SELECT COUNT(*) FROM session_actions a WHERE a.session_id = s.session_id)"
         "   AS actions,"
         " (SELECT COUNT(*) FROM session_learned l WHERE l.session_id = s.session_id)"
         "   AS learned"
-        f" FROM sessions s{where}"
+        " FROM sessions s"
+        # One row per session, from the selection the model column always used:
+        # the agent's own before solo_agent's, then by label. Reading the decoded
+        # name, the route and the estimate from that same row is what lets a
+        # drill-down print them instead of a hard-coded "-".
+        " LEFT JOIN (SELECT session_id, model_id, model, provider, third_party,"
+        "                   ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY"
+        "                     CASE agent_label WHEN 'agent' THEN 0"
+        "                          WHEN 'solo_agent' THEN 1 ELSE 2 END,"
+        "                     agent_label) AS rn"
+        "              FROM session_models) sm"
+        "   ON sm.session_id = s.session_id AND sm.rn = 1"
+        f"{where}"
         f" ORDER BY {SESSION_TIME_S} DESC, s.session_id"
     )
     params = _cond_params(conds)

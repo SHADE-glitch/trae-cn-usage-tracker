@@ -1156,10 +1156,15 @@ if HAVE_TEXTUAL:
                          self.value, route, credit_est(r["credits"]),
                          r["intent"] or "-"] for r in found]
             else:
+                # The selection is joined into the row, so the three columns that
+                # used to be a hard-coded "-" show what the session was set to and
+                # what that selection was estimated to cost. "-" now means unknown.
                 rows = [[db.derived_mark(r["derived_ts"]) + ts(r["shown_ts"]),
                          r["session_id"][:12], r["agent"] or "-",
                          f"{r['turns']:,}", f"{r['toolcalls']:,}",
-                         r["model_id"] or "-", "-", "-",
+                         r["model"] or r["model_id"] or "-",
+                         db.route_label(r["provider"], r["third_party"]),
+                         credit_est(r["credits"]),
                          r["intent"] or "-"] for r in found]
             empty = (f"No sessions for this {self.kind} in {self.window_label}"
                      if self.window_label else
