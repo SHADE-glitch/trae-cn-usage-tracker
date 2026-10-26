@@ -620,6 +620,59 @@ class DashboardPanelTest(TuiBase):
         self.assertIn("Models used", panel)
 
 
+class DateRangePickerTest(TuiBase):
+    """The picker must produce the same windows the range Select does.
+
+    It is the second way into every windowed tab, and nothing exercised it: the
+    All time chip set "end follows now", so the escape-hatch range excluded every
+    row with no timestamp — the exact loss ``db.window_bounds("all")`` was
+    fixed for on the Select path.
+    """
+
+    def _pick(self, current, clicks):
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(120, 40)) as pilot:
+                seen = {}
+                modal = tui.DateRangeModal(current, 1700002000000)
+                app.push_screen(modal, lambda r: seen.setdefault("r", r))
+                await pilot.pause()
+                for wid in clicks:
+                    await pilot.click(wid)
+                    await pilot.pause()
+                await pilot.click("#dr-ok")
+                await pilot.pause()
+                return seen.get("r")
+        return run(go())
+
+    def test_the_all_time_chip_produces_a_window_with_no_bounds(self):
+        got = self._pick("7d", ["#dr-all"])
+        self.assertEqual((got.start_ms, got.end_ms, got.follow_now),
+                         (None, None, False),
+                         "All time kept a 'now' upper bound, which hides every undated row")
+
+    def test_opening_the_picker_on_all_time_and_confirming_keeps_it(self):
+        got = self._pick("all", [])
+        self.assertEqual((got.start_ms, got.end_ms, got.follow_now),
+                         (None, None, False),
+                         "the picker prefilled All time with an end of now")
+
+    def test_the_picker_all_time_lands_on_the_preset_the_select_names(self):
+        async def go():
+            app = self.app()
+            async with app.run_test(size=(120, 40)) as pilot:
+                app.tab_range["tab-usage"] = "7d"
+                app._open_date_range("tab-usage")
+                await pilot.pause()
+                await pilot.click("#dr-all")
+                await pilot.pause()
+                await pilot.click("#dr-ok")
+                await pilot.pause()
+                return app.tab_range["tab-usage"]
+        self.assertEqual(run(go()), "all",
+                         "the picker's All time is not the window the Select calls all")
+
+
 class ModelRouteTuiTest(TuiBase):
     """The Tokens tab is a route table, not a raw balance series.
 

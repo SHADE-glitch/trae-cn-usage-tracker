@@ -447,11 +447,14 @@ if HAVE_TEXTUAL:
         # -- prefill from the tab's current window --------------------------
         def _prefill(self) -> None:
             cur = self._current
-            follow = True
             if isinstance(cur, db.CustomWindow):
                 start, end, follow = cur.start_ms, cur.end_ms, cur.follow_now
             else:
                 start, end = db.window_bounds(cur, self._now)
+                # Only a preset with a live end follows the clock. "All time" has
+                # neither bound by rule, so prefilling it with "now" would hand
+                # back a window that excludes every row with no timestamp.
+                follow = end is not None
             self._set_field("#dr-start", start)
             # A following end shows *now*; a fixed one shows the stored bound.
             self._set_field("#dr-end", self._now if follow else end)
@@ -569,9 +572,15 @@ if HAVE_TEXTUAL:
 
         # -- presets ---------------------------------------------------------
         def _apply_preset(self, key: str) -> None:
-            start, _ = db.window_bounds(key, self._now)
+            start, end = db.window_bounds(key, self._now)
             self._set_field("#dr-start", start)
-            self.query_one("#dr-follow", Checkbox).value = True
+            # The preset's own end decides the switch. Ticking it for "All time"
+            # made the escape-hatch range "all → now", which hides exactly the
+            # rows that have no timestamp to compare against now.
+            follow = end is not None
+            self.query_one("#dr-follow", Checkbox).value = follow
+            if not follow:
+                self._set_field("#dr-end", None)
             if start is not None:
                 self._view = datetime.fromtimestamp(start / 1000).date().replace(day=1)
             self._render_calendar()
@@ -613,7 +622,9 @@ if HAVE_TEXTUAL:
                 self.notify("Dates are MM/DD/YYYY, times HH:MM (24-hour)",
                             severity="error")
                 return
-            if not follow and end is None:
+            if not follow and end is None and start is not None:
+                # A blank start *and* a blank end is All time, which needs no end;
+                # a start with no end is the one combination that is not a window.
                 self.notify("Set an end date, or tick 'End follows current time'",
                             severity="error")
                 return
@@ -2276,6 +2287,11 @@ if HAVE_TEXTUAL:
                 if result is None:
                     self._sync_range_widget()   # cancel: revert the Select
                     return
+                if (result.start_ms is None and result.end_ms is None
+                        and not result.follow_now):
+                    # The picker's All time is the Select's "all" preset: one
+                    # window, one name, so the two ways in cannot drift apart.
+                    result = "all"
                 self.tab_range[pane] = result
                 self._sync_range_widget()
                 if pane == "tab-usage":

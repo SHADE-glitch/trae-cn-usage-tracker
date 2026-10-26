@@ -1890,8 +1890,10 @@ def window_label(value) -> str:
     """
     if not isinstance(value, CustomWindow):
         return USAGE_RANGE_LABELS.get(value, str(value))
+    if value.start_ms is None and value.end_ms is None:
+        return "all → now" if value.follow_now else "all time"
     if value.start_ms is None:
-        return "all → now" if value.follow_now else f"all → {_short_time(value.end_ms)}"
+        return f"all → {_short_time(value.end_ms)}"
     start = _short_time(value.start_ms)
     if value.follow_now:
         return f"{start} → now"

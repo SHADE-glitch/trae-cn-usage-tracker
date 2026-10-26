@@ -106,6 +106,15 @@ class RenderingTest(unittest.TestCase):
         self.assertIsNotNone(start, "a bounded range must still bound both ends")
         self.assertEqual(end, now)
 
+    def test_a_custom_window_with_no_bounds_reads_as_all_time(self):
+        """The picker can hand back "neither bound", which is the all-time window.
+
+        The label used to divide the missing end by 1000 and raise, so the one
+        value that means "everything" could not be printed at all.
+        """
+        self.assertEqual(db.window_label(db.CustomWindow(None, None, False)), "all time")
+        self.assertEqual(db.window_label(db.CustomWindow(None, None, True)), "all → now")
+
     def test_readonly_excludes_exactly_backup_and_restore(self):
         """The set drives whether a command opens the file writable; a mistake is a
         command that can change the database it was only asked to report on."""
