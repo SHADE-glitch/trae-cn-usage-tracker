@@ -275,6 +275,15 @@ def cmd_health(conn, args):
     path = db.db_file(conn)
     print(f"database   {path}")
     print(f"schema     {db.stored_version(conn)} (expected {db.SCHEMA_VERSION})")
+    # The parser generation that wrote the index, not the one in this build: a
+    # fixed reader leaves the rows the old one wrote in place, and a green health
+    # report over those rows is the one thing this page exists to prevent.
+    stored_parser = db.meta_get(conn, "parser_version")
+    current_parser = str(db.load_sync().PARSER_VERSION)
+    stale = ("" if stored_parser == current_parser
+             else " — stale index: run `tcut sync`")
+    print(f"parser     {stored_parser or 'not recorded'}"
+          f" (this build parses with {current_parser}){stale}")
     # The settings surface, named so it can be found without reading the README.
     # A broken file is reported as one, in place, rather than being quietly skipped.
     # Every key the loader knows, spelled the way the settings file spells it — a

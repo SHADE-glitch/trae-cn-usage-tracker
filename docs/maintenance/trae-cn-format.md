@@ -161,8 +161,9 @@ Trae release can be re-measured the same way; nothing here should be parsed by g
 - JSONL summaries use a byte cursor. Complete lines are consumed; a non-parseable trailing segment remains at the cursor for the next run.
 - Whole-file sources use `(size, mtime)` and are replaced when changed.
 - Snapshot repositories use a tag-store mtime fingerprint.
+- A parser generation (`PARSER_VERSION`) is stamped in `meta`. When it differs from the stored one, every cursor is dropped once and each source is re-read, so a repaired reader reaches rows an earlier build already indexed; `tcut health` reports a stale index until that sync runs.
 - `--full` snapshots existing indexed state, resets the index, and scans again.
-- A source record that cannot be parsed increments `unparsed`; it is never silently treated as valid.
+- A source record that cannot be parsed increments `unparsed`, keyed by `(reason, source)`; it is never silently treated as valid, and re-reading one file replaces that file's count instead of adding to it.
 
 ## Summary
 

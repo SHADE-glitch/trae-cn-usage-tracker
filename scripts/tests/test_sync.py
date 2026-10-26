@@ -1195,6 +1195,45 @@ class RunTest(Base):
         self.assertEqual(summary["overview"]["turns"], 1)
         self.assertEqual(summary["overview"]["projects"], 1)
 
+    def test_a_parser_generation_change_reindexes_what_the_old_one_wrote(self):
+        """A repaired parser has to reach the rows the broken one already wrote.
+
+        The cursors record that a file was read, never which parser read it, so a
+        fixed decoder only ever applied to new files: an index built before the
+        annotated-tag fix kept 89 turns and 139 toolcall rows with ``ts = NULL``
+        and health called it green. Only ``--full`` could repair it, and that
+        also drops every table.
+        """
+        roots = self._fixtures()
+        db_path = self.tmp / "run.db"
+        sync.run(db_path=db_path, quiet=True, roots=roots)
+        conn = db.open_db(db_path)
+        try:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM turns WHERE ts IS NOT NULL").fetchone()[0], 1)
+            # What the previous generation left behind: the file was read, the
+            # time was lost, and the cursor says there is nothing left to do.
+            conn.execute("UPDATE turns SET ts = NULL")
+            conn.execute("UPDATE meta SET value = '1' WHERE key = 'parser_version'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        sync.run(db_path=db_path, quiet=True, roots=roots)
+        conn = db.open_db(db_path, readonly=True)
+        try:
+            self.assertEqual(conn.execute("SELECT ts FROM turns").fetchone()[0],
+                             1700000000 * 1000,
+                             "the repaired parser never re-read the snapshot repo")
+            self.assertEqual(db.meta_get(conn, "parser_version"),
+                             str(sync.PARSER_VERSION))
+        finally:
+            conn.close()
+
+        # The invalidation is once, not every run.
+        third = sync.run(db_path=db_path, quiet=True, roots=roots)
+        self.assertEqual(sum(third["results"].values()), 0, third["results"])
+
     def test_a_second_run_indexes_nothing_new(self):
         roots = self._fixtures()
         sync.run(db_path=self.tmp / "run.db", quiet=True, roots=roots)

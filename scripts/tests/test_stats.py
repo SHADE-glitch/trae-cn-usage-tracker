@@ -561,6 +561,31 @@ class HealthTest(CliBase):
         self.assertIn("sources", out)
         self.assertIn("unparsed   none", out)
 
+    def test_health_says_the_index_was_written_by_an_older_parser(self):
+        """A green report over rows the old reader wrote is the failure mode.
+
+        ``unparsed`` is empty in exactly that case — the rows were read, just
+        wrongly — so the parser generation is the only thing that can say the
+        index predates a repair. The next ``sync` re-reads and clears it.
+        """
+        conn = db.open_db(self.db_path)
+        db.meta_set(conn, "parser_version", "1")
+        conn.commit()
+        conn.close()
+        rc, out = self.run_cli("health")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("stale index", out)
+        self.assertIn("tcut sync", out)
+
+    def test_health_does_not_call_a_current_index_stale(self):
+        conn = db.open_db(self.db_path)
+        db.meta_set(conn, "parser_version", str(db.load_sync().PARSER_VERSION))
+        conn.commit()
+        conn.close()
+        rc, out = self.run_cli("health")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("stale index", out)
+
     def test_health_counts_unparsed_records_when_there_are_any(self):
         conn = db.open_db(self.db_path)
         db.note_unparsed(conn, "session_memory:not_json", 4)

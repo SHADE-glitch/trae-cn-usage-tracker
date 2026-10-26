@@ -95,6 +95,17 @@ UNPARSED_REASONS = (
 )
 
 
+# The parser's own generation. Bump it whenever a change to the reading code means
+# rows an earlier build already indexed are wrong — a decoder that lost a timestamp,
+# a field read from the wrong key. The cursors record "this file was read", never
+# "read by this parser", so without this the repair reached only new files and
+# ``--full`` was the only way to apply it to the index that already existed.
+# Measured 2026-10-25: an index built before the annotated-tag fix held 89 turns and
+# 139 toolcall rows with ts NULL, an empty ``unparsed``, and a health report that
+# called it green.
+PARSER_VERSION = 2
+
+
 def format_doc() -> str:
     """Render the format registry as markdown (``tcut format``).
 
@@ -1213,6 +1224,22 @@ HANDLERS = (
 )
 
 
+def _reparse_if_parser_changed(conn) -> bool:
+    """Drop every cursor once when the parser generation moved.
+
+    A cursor says a file was read, not which parser read it. Clearing them makes
+    the next pass re-read every source, which is idempotent — the handlers replace
+    rather than merge — and cheaper than ``--full``, which also drops the tables
+    and takes a snapshot. Returns whether it invalidated anything.
+    """
+    stored = db.meta_get(conn, "parser_version")
+    if stored == str(PARSER_VERSION):
+        return False
+    conn.execute("DELETE FROM sync_state")
+    db.meta_set(conn, "parser_version", str(PARSER_VERSION))
+    return True
+
+
 def run(db_path=None, full=False, quiet=False, roots=None) -> dict:
     """Index everything. Returns a small summary dict.
 
@@ -1233,6 +1260,9 @@ def run(db_path=None, full=False, quiet=False, roots=None) -> dict:
             if db._has_indexed_state(conn):
                 db.snapshot(conn, reason="pre-full-rebuild", db_path=path)
             db.reset(conn)
+        # After a full rebuild the cursors are already gone; either way the stamp
+        # has to be current, or the next run would invalidate again.
+        _reparse_if_parser_changed(conn)
         results = {}
         if roots:
             results["session memory"] = _run_root(

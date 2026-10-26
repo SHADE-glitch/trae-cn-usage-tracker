@@ -614,15 +614,28 @@ def restore(backup_path, db_path=None, reason: str = "pre-restore") -> Path:
     return backup_path
 
 
+def meta_get(conn: sqlite3.Connection, key: str, default=None):
+    """One ``meta`` value, or ``default`` when the key was never written."""
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Write one ``meta`` value. Values are text; a caller compares strings."""
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES(?,?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value))
+
+
 def stored_version(conn: sqlite3.Connection) -> int:
     """The schema version this database was last written at.
 
     ``0`` when there is no usable value — the right answer: it is as old as it
     can get, so every migration below runs against it.
     """
-    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     try:
-        return int(row[0])
+        return int(meta_get(conn, "schema_version"))
     except (TypeError, ValueError):
         return 0
 
