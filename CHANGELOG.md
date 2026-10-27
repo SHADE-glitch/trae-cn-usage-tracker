@@ -546,3 +546,35 @@ Evidence L2 2026-10-26 the live index queried read-only (`turns` 90 rows / 89 NU
          rebuilds exactly that state and shows the next sync repairing it.
 Cost     None; the record now says which of its own numbers depended on how the index was built.
 Commit   ac119c7
+
+---
+
+### D-031 · 2026-10-27 · chore
+
+Symptom  本仓早已归档，但"归档"只体现在 GitHub 的那个开关上：README 与 About 都不说它停更，
+         `AGENTS.md` 也没有一句"别再开发"；而 `## Listed on the GitHub profile` 一节写的是
+         "本仓不在 profile 上，这不是疏忽"——一旦公开，这句话立刻变成假的。归档决定本身也没有
+         任何 `D-###` 记录，读者查不到它为什么停。
+         （归档的决定早于本条记录，当时没有留下日期；本条记的是 2026-10-27 的状态。）
+
+Change   ① 仓库转为公开，随后**重新归档**——作为一次尝试的记录保留，不再维护。
+         ② GitHub About 追加一句退休说明（共 346 字符，未超 350）：Trae CN 的文件和其它追踪器
+           对不上，因此不再维护。topics 未动。
+         ③ `README.md` / `README.zh-CN.md` 的四段式之后各加一个 `⚠️` 块：它本来要和另外三个
+           追踪器并排，但 Trae CN 落盘的文件和那三家读的对不上，家族的合并视图始终没法把它
+           算进去。
+         ④ `AGENTS.md` 顶部加退休横幅——**不要在这里开新活**，只修主人点名要修的那一处，并在
+           `D-###` 里写明本仓已退休；维度指针的节号列表补上 §9。
+         ⑤ `## Listed on the GitHub profile` 翻面：从"不在榜上、且这不是疏忽"改成"在榜上、
+           标了 `🧊 frozen — kept as a record`"，义务清单保留；`Freeze / archive` 一条改为
+           "榜上已写明，别让后续编辑读成仍在维护"。
+         ⑥ 这套程序写在 `~/.agents/standards/STANDARD.md` §9，本仓是它的第一次应用。
+
+Evidence `python3 -m unittest discover -s scripts/tests` 仍是 287 个用例，README 的计数行未动；
+         本次只改 About、README 两半、`AGENTS.md` 与 CHANGELOG。
+
+Cost     公开意味着 43 个提交的历史也一并公开。历史 blob 里仍有 `/home/shade`（旧 CHANGELOG），
+         判断是**不阻塞**：handle 本身就是 `SHADE-glitch`，而 GitHub 按 SHA 保留旧对象，重写
+         历史既清不掉也换不来什么。刻意不删仓库、不改写历史。
+
+Commit   d0d4996
