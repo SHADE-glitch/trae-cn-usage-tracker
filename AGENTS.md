@@ -2,10 +2,16 @@
 
 Guidance for AI coding agents working in this repository.
 
+> ⚠️ **Retired — archived, no longer developed.** It was built to sit beside the other three
+> trackers and never could: Trae CN's local files do not line up with what they read, so the
+> family's merged views could never include it. **Do not start new work here.** Fix something only
+> if the owner asks for that exact fix, and say in the `D-###` entry that the repository is
+> retired. `STANDARD.md` §9 is the procedure that got it here.
+
 > **Dimension.** A — open source (strict), per `CONVENTIONS.md` §0; the shared rules live once in
 > `~/.agents/standards/STANDARD.md` (§1 root files, §2 process drafts, §3 CHANGELOG entries,
-> §4 runtime ignore list, §5 conflict rule, §6 remotes/pushing, §8 profile listing) and the
-> dimension-A detail in `~/.agents/standards/dimensions/a.md`. Neither is restated here.
+> §4 runtime ignore list, §5 conflict rule, §6 remotes/pushing, §8 profile listing, §9 retirement)
+> and the dimension-A detail in `~/.agents/standards/dimensions/a.md`. Neither is restated here.
 >
 > **Read these before the first edit** (bare `@` imports — CodeBuddy expands them; opencode reads
 > the same two from `opencode.json`):
@@ -245,23 +251,20 @@ Keep parser assumptions in `docs/maintenance/trae-cn-format.md`. If a Trae file 
 
 ## Listed on the GitHub profile
 
-**This repository is not on the owner's profile front page, and that is not an oversight.** It is a
-**private** repository, and `SHADE-glitch/SHADE-glitch` lists public repositories only — the two
-whitelisted private repos are the sole exception, and this is not one of them. The profile's own
-`AGENTS.md` is the authoritative rulebook, and its §1 is explicit on both counts: naming another
-private repo needs the owner's spoken approval first, and **a repo must never be flipped to public
-just so it can be listed** — that is a privacy decision, not a profile edit.
+**This repository is on the owner's profile front page, marked `🧊 frozen — kept as a record`.** It
+was made public and listed on 2026-10-27, after the retirement decision, so a reader finds it as a
+record of the attempt rather than as a tool to install. The profile's own `AGENTS.md` is the
+authoritative rulebook, and its §6 index is the reciprocal of this section.
 
-So there is no listing obligation today, and this section exists to say so rather than to be
-silently absent. If the repo is ever made public **and** added to the profile, this section becomes
-the reciprocal of the profile's §6 index, and these facts must then be kept true on the front page:
+Because it is listed, these facts must stay true on the front page:
 
 - **Rename / transfer / delete** — the profile link dies; fix the row.
 - **Purpose drift** — the profile's one-line description must still be true; the claims it copies —
   *"no network"*, "dev tooling" — are **promises**, not slogans.
 - **LICENSE change** — the profile's license badge must equal this repo's `LICENSE`.
 - **Version / runtime declaration change** — the matching badge must equal this repo's declaration.
-- **Freeze / archive** — say so on the profile; never leave a stale "maintained".
+- **Freeze / archive** — already stated on the profile; keep the `🧊` marker and never let a later
+  edit make the row read as maintained.
 - **Public ↔ private** — a repo that goes private again must be **delisted**.
 
 **The GitHub About description is under the same rule.** It is a promise with 350 characters, and it

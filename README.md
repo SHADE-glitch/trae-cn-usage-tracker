@@ -18,6 +18,12 @@
 
 **Where to look** — See [AGENTS.md](AGENTS.md) and [MAINTENANCE.md](MAINTENANCE.md).
 
+> ⚠️ **Reads Trae CN, and it ends here.** It was built to sit beside the other three trackers and
+> never could: Trae CN's local files do not line up with what they read, so the family's merged
+> views could never include it. The author is **no longer developing this** and keeps it as a
+> record — the panels it fills are honest, and the ones it cannot fill are marked as gaps. Read the
+> rest as a snapshot, not a roadmap.
+
 > 🔭 See how you **actually** use Trae CN — every 🎯 skill, 🤖 agent, 🧩 plugin and
 > 🔌 MCP server that is installed, every 🧰 tool call that was made, and the 💳 credits
 > the account was left at.
