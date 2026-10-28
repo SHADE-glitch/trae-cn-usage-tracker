@@ -290,7 +290,7 @@ SQLite**。设置 `store_content = false` 后保留元数据并删除全部这�
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 287 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 292 tests ... OK
 ```
 
 测试套件是纯 `unittest`（`pytest` 也能发现它们）。其中两个需要装 `textual`：`test_tui.py`，以及
@@ -313,7 +313,8 @@ python3 -m unittest discover -s scripts/tests     # Ran 287 tests ... OK
 | `test_hermetic.py` | 13 | 运行时绊线：本套件从不打开真实的 `usage.db`，也不读取真实 Trae 主机目录，进程内和子进程都受守卫 |
 | `test_record_coverage.py` | 6 | 每条被覆盖的提交都在 `CHANGELOG.md` 里有记录 |
 | `test_dispatcher.py` | 6 | `bin/tcut`：子命令路由、venv 解析、装不上时仍能给出帮助 |
-| `test_readme_bilingual.py` | 4 | 两份 README 始终是同一份文档的两种语言，且每条目录链接都有对应标题可落 |
+| `test_readme_bilingual.py` | 3 | 两份 README 始终是同一份文档的两种语言：同样的分节、同样的语言开关 |
+| `test_doc_anchors.py` | 6 | 每份入库文档里的每个相对链接都指向真实存在的文件，每个 `#片段` 都落得到真实标题——页内与跨文件都算，按 GitHub 的解析方式；并且每份目录都把它描述的每个分节列全 |
 | `test_readme_counts.py` | 2 | 两份 README 里的每个用例总数都等于 `unittest discover` 数出来的数，且两页都写全了加载器知道的每个设置 |
 | `test_conventions.py` | 9 | A 档根文件层是否在根目录齐备、AGENTS.md 是否用一行指明档位而不是抄规范正文，以及忽略清单覆盖的运行态是否真的没有被跟踪 |
 

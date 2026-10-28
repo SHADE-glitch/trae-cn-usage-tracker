@@ -317,7 +317,7 @@ database.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 287 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 292 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual` installed —
@@ -341,7 +341,8 @@ the import allowlist that keeps it that way).
 | `test_hermetic.py` | 13 | a runtime tripwire: the suite never opens the real `usage.db` or reads the real Trae host dirs, in-process or through a child |
 | `test_record_coverage.py` | 6 | every covered commit is recorded in `CHANGELOG.md` |
 | `test_dispatcher.py` | 6 | `bin/tcut`: subcommand routing, venv resolution, help without a resolvable install |
-| `test_readme_bilingual.py` | 4 | the two READMEs stay one document in two languages, and every table-of-contents link has a heading to land on |
+| `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages: the same sections, the same language switcher |
+| `test_doc_anchors.py` | 6 | every relative link in every tracked document points at a file that is there, every `#fragment` lands on a heading — in-page and across files, the way GitHub resolves them — and every table of contents lists every section it maps |
 | `test_readme_counts.py` | 2 | every suite total in either README equals what `unittest discover` counts, and both pages document every setting the loader knows |
 | `test_conventions.py` | 9 | the dimension-A root layer is present at the root, AGENTS.md names its dimension in one line instead of quoting the standard's body, and no runtime state the ignore list covers is tracked |
 
