@@ -117,7 +117,9 @@ Trae CN **写**了原始数据，只是从不**展示**它。它保留了：
 
 ## 📊 八个 tab
 
-<p align="center"><img src="docs/screenshots/demo.gif" alt="切换统计窗口与标签页" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份 Trae CN 用量索引的八种切法——仪表盘上是会话与额度，往下依次按工具、技能、代理、插件、MCP 工具、模型和请求拆开。</em></p>
 
 **Dashboard** 首先打开：先看一眼关键数字，再决定往哪儿钻。tab 上方有一条共享顶栏承载范围选择器，
 而**每个 tab 各存各的范围** —— 改一个 tab 的窗口不会动另一个。Dashboard、Tools、Agents、Tokens、

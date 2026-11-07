@@ -120,7 +120,9 @@ It never touches Trae's files, installs no hook, and adds no runtime overhead.
 
 ## 📊 The eight tabs
 
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Switching the window and opening a tab" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index of Trae CN usage cut eight ways — sessions and credits on the dashboard, then the same data by tool, skill, agent, plugin, MCP tool, model and request.</em></p>
 
 The **Dashboard** opens first: an at-a-glance summary of the important numbers. A shared top
 bar above the tabs carries the range selector, and **each tab keeps its own range** — changing
