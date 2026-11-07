@@ -44,8 +44,8 @@
 - [🤔 Why this exists](#-why-this-exists)
 - [📝 What is recorded, and what is not](#-what-is-recorded-and-what-is-not)
 - [🏗️ How it works](#️-how-it-works)
-- [📊 The eight tabs](#-the-eight-tabs)
 - [💳 Credits vs tokens](#-credits-vs-tokens)
+- [📊 The eight tabs](#-the-eight-tabs)
 - [📋 Requirements](#-requirements)
 - [🚀 Install](#-install)
 - [🧭 Usage](#-usage)
@@ -124,45 +124,6 @@ The evidence is in [`docs/maintenance/trae-cn-format.md`](docs/maintenance/trae-
 `tcut` is a **passive reader**: it parses the files Trae already writes and builds an index.
 It never touches Trae's files, installs no hook, and adds no runtime overhead.
 
-## 📊 The eight tabs
-
-The **Dashboard** opens first: an at-a-glance summary of the important numbers. A shared top
-bar above the tabs carries the range selector, and **each tab keeps its own range** — changing
-one tab's window never moves another's. The Dashboard, Tools, Agents, Tokens and Usage tabs
-default to **7 days**; Skills, Plugins and MCP carry no timestamp at all, so they are all-time
-and the selector is hidden there. A window only changes the **counts**, never the list.
-
-| | Tab | What it shows |
-|---|-----|---------------|
-| 🧭 | **Dashboard** | usage KPIs (sessions, projects, turns, tool calls, prompts, agents, skills, plugins, MCP), the installed-inventory counts, Top 5 projects / agents / models (3P tagged), a per-day activity sparkline, and a `Credits · routes · sync` panel with the balance, the spend lower bound, the estimate's allocated / unallocated parts, and 3P sessions |
-| 🧰 | **Tools** | tool calls **per session** — id-derived counts with the session's first and last call. A count, not a per-tool name: see [Credits vs tokens](#-credits-vs-tokens) |
-| 🎯 | **Skills** | the installed skill inventory. All-time: Trae records no per-skill invocation |
-| 🤖 | **Agents** | installed agents, and how many sessions in the window name one |
-| 🧩 | **Plugins** | the installed plugin inventory, with version. All-time |
-| 🔌 | **MCP** | the installed MCP server inventory. All-time |
-| 🔢 | **Tokens** | **model routes ranked by estimated credits** — model, provider, `Built-in` / `3P`, `credits est.`, share, sessions, last used. The token column stays `-` because Trae writes no token count (third-party routes included) |
-| 📊 | **Usage** | summary panels plus one row **per (session, model selection)** — when, session, model, route, credit estimate, project, turns, calls |
-
-<kbd>Enter</kbd> (or a double-click) opens the **drill-down** for a session row on Tools or
-Usage, an agent row on Agents, or a model-route row on Tokens. The three inventory tabs have
-nothing behind a row, and they say that in a notification rather than opening an empty screen.
-
-Three rules hold across every table, and they exist because the alternative reads as a fact:
-
-- **A window never reports a zero for rows it cannot see.** A windowed count renders `-`
-  (`db.window_count`) only when the row has neither a measured `last_ts` nor a derived
-  `created_ts`. `0` is reserved for a measured absence.
-- **A derived time prints `~`.** 25 of this machine's 49 sessions have no measured timestamp at
-  all; the creation second is decoded from the session id (median delta 0.0 s against the 24
-  dated sessions), and the panels disclose how many rows are in that state.
-- **A total over rows that never carried the field prints `-`, not `0`.** 28 of 49 sessions
-  carry neither a decoded project nor a raw project key, so a window can genuinely have no
-  project key to count.
-
-A table never shows a half column: each table keeps the longest **prefix** of its columns that
-fits and names the dropped ones on the note line above it, so a narrow terminal costs columns,
-not legibility. A long cell is capped at `name_cap` and the note prints the number in force.
-
 ## 💳 Credits vs tokens
 
 This is the one Trae-specific fact worth understanding before reading the numbers, and it was
@@ -202,6 +163,45 @@ model. The `share` column is a share of the **allocated** estimate, not of all s
 
 The integers are daily grants; the single fractional balance (154.0244, out of 1400…1800) is
 the only sample that proves consumption happened, and a grant landed inside that interval too.
+
+## 📊 The eight tabs
+
+The **Dashboard** opens first: an at-a-glance summary of the important numbers. A shared top
+bar above the tabs carries the range selector, and **each tab keeps its own range** — changing
+one tab's window never moves another's. The Dashboard, Tools, Agents, Tokens and Usage tabs
+default to **7 days**; Skills, Plugins and MCP carry no timestamp at all, so they are all-time
+and the selector is hidden there. A window only changes the **counts**, never the list.
+
+| | Tab | What it shows |
+|---|-----|---------------|
+| 🧭 | **Dashboard** | usage KPIs (sessions, projects, turns, tool calls, prompts, agents, skills, plugins, MCP), the installed-inventory counts, Top 5 projects / agents / models (3P tagged), a per-day activity sparkline, and a `Credits · routes · sync` panel with the balance, the spend lower bound, the estimate's allocated / unallocated parts, and 3P sessions |
+| 🧰 | **Tools** | tool calls **per session** — id-derived counts with the session's first and last call. A count, not a per-tool name: see [Credits vs tokens](#-credits-vs-tokens) |
+| 🎯 | **Skills** | the installed skill inventory. All-time: Trae records no per-skill invocation |
+| 🤖 | **Agents** | installed agents, and how many sessions in the window name one |
+| 🧩 | **Plugins** | the installed plugin inventory, with version. All-time |
+| 🔌 | **MCP** | the installed MCP server inventory. All-time |
+| 🔢 | **Tokens** | **model routes ranked by estimated credits** — model, provider, `Built-in` / `3P`, `credits est.`, share, sessions, last used. The token column stays `-` because Trae writes no token count (third-party routes included) |
+| 📊 | **Usage** | summary panels plus one row **per (session, model selection)** — when, session, model, route, credit estimate, project, turns, calls |
+
+<kbd>Enter</kbd> (or a double-click) opens the **drill-down** for a session row on Tools or
+Usage, an agent row on Agents, or a model-route row on Tokens. The three inventory tabs have
+nothing behind a row, and they say that in a notification rather than opening an empty screen.
+
+Three rules hold across every table, and they exist because the alternative reads as a fact:
+
+- **A window never reports a zero for rows it cannot see.** A windowed count renders `-`
+  (`db.window_count`) only when the row has neither a measured `last_ts` nor a derived
+  `created_ts`. `0` is reserved for a measured absence.
+- **A derived time prints `~`.** 25 of this machine's 49 sessions have no measured timestamp at
+  all; the creation second is decoded from the session id (median delta 0.0 s against the 24
+  dated sessions), and the panels disclose how many rows are in that state.
+- **A total over rows that never carried the field prints `-`, not `0`.** 28 of 49 sessions
+  carry neither a decoded project nor a raw project key, so a window can genuinely have no
+  project key to count.
+
+A table never shows a half column: each table keeps the longest **prefix** of its columns that
+fits and names the dropped ones on the note line above it, so a narrow terminal costs columns,
+not legibility. A long cell is capped at `name_cap` and the note prints the number in force.
 
 ## 📋 Requirements
 
