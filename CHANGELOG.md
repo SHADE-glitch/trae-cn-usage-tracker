@@ -578,3 +578,13 @@ Cost     公开意味着 43 个提交的历史也一并公开。历史 blob 里�
          历史既清不掉也换不来什么。刻意不删仓库、不改写历史。
 
 Commit   d0d4996
+
+### D-032 · 2026-11-07 · taste
+Symptom   The README pair's contents listed a section order the file itself no longer kept, because
+          the table was written by hand and the Credits section moved after it was.
+Change    Both tables of contents are generated from the headings each side carries, in the order the
+          document now runs; the section set is unchanged.
+Evidence  L0 2026-11-07 `python3 -m unittest discover -s scripts/tests` green; the layout audit
+          reports this repository compliant; every entry in both contents resolves against its own file.
+Cost      None for the reader; the table stops being able to drift from the document it lists.
+Commit    d01ca64
