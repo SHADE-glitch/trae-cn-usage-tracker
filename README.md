@@ -10,11 +10,17 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/trae-cn-usage-tracker)
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
-
 **What it is** — A passive, read-only tracker for Trae CN: an eight-tab TUI and headless reports over the skills, agents, plugins and MCP servers installed, the tool calls made, and the credit balance the account was left at.
 
 **What it solves** — Trae CN persists little that is readable; `tcut` indexes what it can into one local SQLite file and is honest about the gaps it cannot fill.
+
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
+
+<p align="center"><em><b>The dashboard</b> — what Trae CN used: skills, agents, plugins, MCP servers, the tool calls behind them, and the credit balance the account was left at. Demo index, no real machine.</em></p>
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index of Trae CN usage cut eight ways — sessions and credits on the dashboard, then the same data by tool, skill, agent, plugin, MCP tool, model and request.</em></p>
 
 **How to run** — `./install.sh`, then `tcut sync`.
 
@@ -119,10 +125,6 @@ The evidence is in [`docs/maintenance/trae-cn-format.md`](docs/maintenance/trae-
 It never touches Trae's files, installs no hook, and adds no runtime overhead.
 
 ## 📊 The eight tabs
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
-
-<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index of Trae CN usage cut eight ways — sessions and credits on the dashboard, then the same data by tool, skill, agent, plugin, MCP tool, model and request.</em></p>
 
 The **Dashboard** opens first: an at-a-glance summary of the important numbers. A shared top
 bar above the tabs carries the range selector, and **each tab keeps its own range** — changing

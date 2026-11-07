@@ -10,11 +10,17 @@
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=black)
 [![Repository](https://img.shields.io/badge/repository-GitHub-black?logo=github)](https://github.com/SHADE-glitch/trae-cn-usage-tracker)
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
-
 **是什么** —— 一个针对 Trae CN 的被动只读追踪器：八 tab 的 TUI 与无头报告，覆盖已安装的 skill、agent、插件与 MCP server、发生过的工具调用，以及账户最后的 credit 余额。
 
 **解决什么** —— Trae CN 几乎不留可读数据；`tcut` 把能读到的索引进一个本地 SQLite 文件，并如实标出它填不上的空白。
+
+<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
+
+<p align="center"><em><b>仪表盘</b> —— Trae CN 用过什么：skill、agent、插件、MCP 服务及其工具调用，还有账户最后的额度余额。演示索引，不含真实机器数据。</em></p>
+
+<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份 Trae CN 用量索引的八种切法——仪表盘上是会话与额度，往下依次按工具、技能、代理、插件、MCP 工具、模型和请求拆开。</em></p>
 
 **怎么跑** —— `./install.sh`，然后 `tcut sync`。
 
@@ -116,10 +122,6 @@ Trae CN **写**了原始数据，只是从不**展示**它。它保留了：
 不给宿主增加任何运行时开销。
 
 ## 📊 八个 tab
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份 Trae CN 用量索引的八种切法——仪表盘上是会话与额度，往下依次按工具、技能、代理、插件、MCP 工具、模型和请求拆开。</em></p>
 
 **Dashboard** 首先打开：先看一眼关键数字，再决定往哪儿钻。tab 上方有一条共享顶栏承载范围选择器，
 而**每个 tab 各存各的范围** —— 改一个 tab 的窗口不会动另一个。Dashboard、Tools、Agents、Tokens、
