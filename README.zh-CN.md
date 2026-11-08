@@ -22,6 +22,10 @@
 
 <p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份 Trae CN 用量索引的八种切法——仪表盘上是会话与额度，往下依次按工具、技能、代理、插件、MCP 工具、模型和请求拆开。</em></p>
 
+<p align="center"><img src="docs/screenshots/demo-range.gif" alt="把时间范围从 30 天切到 7 天，再切到 1 天" width="900"></p>
+
+<p align="center"><em><b>动图内容：</b> 仪表盘窗口从 30 天收窄到 7 天、1 天，会话、额度与余额曲线随之重算。 <b>展示的功能：</b> 会话与额度同屏呈现，范围选择器只作用于当前标签页。</em></p>
+
 **怎么跑** —— `./install.sh`，然后 `tcut sync`。
 
 **去哪看** —— 见 [AGENTS.md](AGENTS.md) 与 [MAINTENANCE.md](MAINTENANCE.md)。

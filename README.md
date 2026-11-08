@@ -22,6 +22,10 @@
 
 <p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index of Trae CN usage cut eight ways — sessions and credits on the dashboard, then the same data by tool, skill, agent, plugin, MCP tool, model and request.</em></p>
 
+<p align="center"><img src="docs/screenshots/demo-range.gif" alt="Switching the time range from 30 days to 7 days and then to 1 day" width="900"></p>
+
+<p align="center"><em><b>In the clip:</b> the Dashboard's window moves from 30 days down to 7 days and 1 day, re-cutting sessions, credits and the balance curve. <b>What it shows:</b> sessions and credits on one screen, with a range selector that only changes this tab.</em></p>
+
 **How to run** — `./install.sh`, then `tcut sync`.
 
 **Where to look** — See [AGENTS.md](AGENTS.md) and [MAINTENANCE.md](MAINTENANCE.md).
