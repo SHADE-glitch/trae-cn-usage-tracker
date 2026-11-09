@@ -607,3 +607,21 @@ Cost      The list stays a snapshot: this repository's CI cannot read ~/.agents,
           still needs a manual pass here. What watches for that drift now is section 13 of
           ~/.agents/scripts/audit.sh, which reports it instead of waiting for a red build that never arrives.
 Commit    5b37d8d
+
+### D-034 · 2026-11-09 · chore
+Symptom   AGENTS.md still said "This repository is private." It has been public, archived and
+          listed on the profile as a frozen record since D-031 (2026-10-27), so the line told
+          a reader the opposite of the repository's real state. This is the last correction
+          before the final seal; no maintenance or family-rule alignment is owed here, because
+          Trae CN cannot record the real tokens the other trackers read.
+Change    Correct the visibility claim to name the actual state — public, archived, retired,
+          kept as a record — and point at the profile section. Unarchive, push, let the final
+          CI run finish, then archive again, per STANDARD.md §9. Nothing else changes: no
+          code, CI, visibility, topics or history.
+Evidence  L0 `python3 -m unittest discover -s scripts/tests` -> 292 OK (Python 3.14, the CI
+          upper bound); the record-coverage check is green; `gh api` reports archived=true
+          and private=false; the final push's CI run is left to a success verdict before the
+          repository is archived again.
+Cost      One stale sentence corrected. The repository stays retired and read-only; the
+          tracker family is maintained without it (tcut cannot record real tokens).
+Commit    33d2788
