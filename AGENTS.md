@@ -49,7 +49,7 @@ order, as `codebuddy-usage-tracker` and `qoder-cn-usage-tracker`; only the data 
 differs. A slot here ships what Trae actually records and **names on its own note line what it does
 not have** — never a placeholder that reads as `0` and never a removed tab. See the hard rule below.
 
-This repository is private.
+This repository is public, archived, and retired — kept as a record (see the profile section below).
 
 ## Scope
 
