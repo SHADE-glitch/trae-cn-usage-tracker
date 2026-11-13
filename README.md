@@ -329,7 +329,7 @@ database.
 ## 🧪 Testing
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 292 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 293 tests ... OK
 ```
 
 The suites are plain `unittest` (`pytest` discovers them too). Two need `textual` installed —
@@ -356,7 +356,7 @@ the import allowlist that keeps it that way).
 | `test_readme_bilingual.py` | 3 | the two READMEs stay one document in two languages: the same sections, the same language switcher |
 | `test_doc_anchors.py` | 6 | every relative link in every tracked document points at a file that is there, every `#fragment` lands on a heading — in-page and across files, the way GitHub resolves them — and every table of contents lists every section it maps |
 | `test_readme_counts.py` | 2 | every suite total in either README equals what `unittest discover` counts, and both pages document every setting the loader knows |
-| `test_conventions.py` | 9 | the dimension-A root layer is present at the root, AGENTS.md names its dimension in one line instead of quoting the standard's body, and no runtime state the ignore list covers is tracked |
+| `test_conventions.py` | 10 | the dimension-A root layer is present at the root, AGENTS.md names its dimension in one line instead of quoting the standard's body, and no runtime state the ignore list covers is tracked |
 
 `test_readme_counts.py` is what keeps the two numbers above honest: a total that drifts fails the
 suite. The suites are read off the syntax trees, so a suite added without a row here is a count

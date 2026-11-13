@@ -302,7 +302,7 @@ SQLite**。设置 `store_content = false` 后保留元数据并删除全部这�
 ## 🧪 测试
 
 ```bash
-python3 -m unittest discover -s scripts/tests     # Ran 292 tests ... OK
+python3 -m unittest discover -s scripts/tests     # Ran 293 tests ... OK
 ```
 
 测试套件是纯 `unittest`（`pytest` 也能发现它们）。其中两个需要装 `textual`：`test_tui.py`，以及
@@ -328,7 +328,7 @@ python3 -m unittest discover -s scripts/tests     # Ran 292 tests ... OK
 | `test_readme_bilingual.py` | 3 | 两份 README 始终是同一份文档的两种语言：同样的分节、同样的语言开关 |
 | `test_doc_anchors.py` | 6 | 每份入库文档里的每个相对链接都指向真实存在的文件，每个 `#片段` 都落得到真实标题——页内与跨文件都算，按 GitHub 的解析方式；并且每份目录都把它描述的每个分节列全 |
 | `test_readme_counts.py` | 2 | 两份 README 里的每个用例总数都等于 `unittest discover` 数出来的数，且两页都写全了加载器知道的每个设置 |
-| `test_conventions.py` | 9 | A 档根文件层是否在根目录齐备、AGENTS.md 是否用一行指明档位而不是抄规范正文，以及忽略清单覆盖的运行态是否真的没有被跟踪 |
+| `test_conventions.py` | 10 | A 档根文件层是否在根目录齐备、AGENTS.md 是否用一行指明档位而不是抄规范正文，以及忽略清单覆盖的运行态是否真的没有被跟踪 |
 
 上面两个数字由 `test_readme_counts.py` 保证诚实：总数漂了就会挂测试。套件用例数是从语法树读出来的，
 所以新增一个套件却忘了在这张表里加一行，会体现为总数不对，而不是"表格看起来旧了"。
