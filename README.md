@@ -14,17 +14,9 @@
 
 **What it solves** — Trae CN persists little that is readable; `tcut` indexes what it can into one local SQLite file and is honest about the gaps it cannot fill.
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="The dashboard, running against a demo index" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="The Trae CN tracker stepping through all eight tabs, opening a skill row on the way" width="1100"></p>
 
-<p align="center"><em><b>The dashboard</b> — what Trae CN used: skills, agents, plugins, MCP servers, the tool calls behind them, and the credit balance the account was left at. Demo index, no real machine.</em></p>
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="Stepping through all eight tabs of the TUI" width="900"></p>
-
-<p align="center"><em><b>In the clip:</b> the tour starts on the Dashboard and steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage. <b>What it shows:</b> one index of Trae CN usage cut eight ways — sessions and credits on the dashboard, then the same data by tool, skill, agent, plugin, MCP tool, model and request.</em></p>
-
-<p align="center"><img src="docs/screenshots/demo-range.gif" alt="Switching the time range from 30 days to 7 days and then to 1 day" width="900"></p>
-
-<p align="center"><em><b>In the clip:</b> the Dashboard's window moves from 30 days down to 7 days and 1 day, re-cutting sessions, credits and the balance curve. <b>What it shows:</b> sessions and credits on one screen, with a range selector that only changes this tab.</em></p>
+<p align="center"><em><b>In the clip:</b> the board opens on the dashboard, then steps through Tools, Skills, Agents, Plugins, MCP, Tokens and Usage; on Skills, <code>Enter</code> opens the row it is on and <code>Esc</code> returns. <b>What it shows:</b> the window over one index — requests and credits, token and cache totals, the model and tool leaders, and each skill’s calls, pass rate and last use. The index behind it is synthetic, seeded for the clip.</em></p>
 
 **How to run** — `./install.sh`, then `tcut sync`.
 

@@ -14,17 +14,9 @@
 
 **解决什么** —— Trae CN 几乎不留可读数据；`tcut` 把能读到的索引进一个本地 SQLite 文件，并如实标出它填不上的空白。
 
-<p align="center"><img src="docs/screenshots/dashboard.png" alt="仪表盘（演示索引）" width="900"></p>
+<p align="center"><img src="docs/screenshots/demo.gif" alt="Trae CN 记录器依次切过八个标签页，途中打开一条技能记录" width="1100"></p>
 
-<p align="center"><em><b>仪表盘</b> —— Trae CN 用过什么：skill、agent、插件、MCP 服务及其工具调用，还有账户最后的额度余额。演示索引，不含真实机器数据。</em></p>
-
-<p align="center"><img src="docs/screenshots/demo.gif" alt="依次切换 TUI 的八个标签页" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b>从仪表盘开始，依次走完工具、技能、代理、插件、MCP、Token、用量八个标签页。<b>展示的功能：</b>一份 Trae CN 用量索引的八种切法——仪表盘上是会话与额度，往下依次按工具、技能、代理、插件、MCP 工具、模型和请求拆开。</em></p>
-
-<p align="center"><img src="docs/screenshots/demo-range.gif" alt="把时间范围从 30 天切到 7 天，再切到 1 天" width="900"></p>
-
-<p align="center"><em><b>动图内容：</b> 仪表盘窗口从 30 天收窄到 7 天、1 天，会话、额度与余额曲线随之重算。 <b>展示的功能：</b> 会话与额度同屏呈现，范围选择器只作用于当前标签页。</em></p>
+<p align="center"><em><b>动图内容：</b>看板从仪表盘进入，依次切过工具、技能、代理、插件、MCP、Token、用量七页；在技能页按 <code>Enter</code> 打开光标所在行，<code>Esc</code> 返回。<b>展示的功能：</b>单个索引的全景——请求与额度、token 与缓存总量、模型与工具排行，以及每个技能的调用次数、成功率与最后使用时间。画面里的索引是为录制造的合成数据。</em></p>
 
 **怎么跑** —— `./install.sh`，然后 `tcut sync`。
 
